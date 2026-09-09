@@ -7,6 +7,7 @@
 #include "dlpack/dlpack.h"
 #include "numpy/arrayobject.h"
 #include "scalartypes.h"
+#include "npy_fpmath.h"
 #include "npy_pycompat.h"
 #include "npy_argparse.h"
 #include "npy_dlpack.h"
@@ -86,6 +87,18 @@ dlpack_dtype_registry_lookup(uint8_t code, uint8_t bits)
         return NULL;
     }
     return (PyArray_Descr *)reg_val;
+}
+
+
+/*
+ * Whether a built-in floating dtype has an IEEE representation that DLPack
+ * can describe without padding.
+ */
+static int
+dlpack_float_dtype_is_supported(PyArray_Descr *dtype)
+{
+    return dtype->elsize <= 8 ||
+            dtype->type_num == NPY_LDOUBLE_IEEE_QUAD_TYPENUM;
 }
 
 
@@ -293,9 +306,7 @@ fill_dl_tensor_information(
         managed_dtype.code = kDLUInt;
     }
     else if (PyDataType_ISFLOAT(dtype)) {
-        // We can't be sure that the dtype is
-        // IEEE or padded.
-        if (itemsize > 8) {
+        if (!dlpack_float_dtype_is_supported(dtype)) {
             PyErr_SetString(PyExc_BufferError,
                     "DLPack only supports IEEE floating point types "
                     "without padding (longdouble typically is not IEEE).");
@@ -849,6 +860,7 @@ from_dlpack(PyObject *self,
             case 16: typenum = NPY_FLOAT16; break;
             case 32: typenum = NPY_FLOAT32; break;
             case 64: typenum = NPY_FLOAT64; break;
+            case 128: typenum = NPY_LDOUBLE_IEEE_QUAD_TYPENUM; break;
         }
         break;
     case kDLComplex:
@@ -1042,4 +1054,3 @@ _dlpack_registry_replace(PyObject *self, PyObject *args)
     Py_SETREF(state->static_pydata.dlpack_export_registry, Py_NewRef(exp));
     return ret;
 }
-

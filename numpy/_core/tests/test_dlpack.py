@@ -6,6 +6,17 @@ import numpy as np
 from numpy.testing import assert_array_equal
 
 
+_longdouble_info = np.finfo(np.longdouble)
+_longdouble_is_dlpack_compatible = (
+    np.dtype(np.longdouble).itemsize <= 8
+    or (
+        np.dtype(np.longdouble).itemsize == 16
+        and _longdouble_info.nmant == 112
+        and _longdouble_info.maxexp == 16384
+    )
+)
+
+
 def new_and_old_dlpack():
 
     class OldDLPack(np.ndarray):
@@ -65,14 +76,18 @@ class TestDLPack:
         np.bool,
         np.int8, np.int16, np.int32, np.int64,
         np.uint8, np.uint16, np.uint32, np.uint64,
-        np.float16, np.float32, np.float64,
+        np.float16, np.float32, np.float64, np.longdouble,
         np.complex64, np.complex128
     ])
     @pytest.mark.parametrize("arr", new_and_old_dlpack())
     def test_dtype_passthrough(self, arr, dtype):
         x = arr.astype(dtype)
-        y = np.from_dlpack(x)
+        if dtype is np.longdouble and not _longdouble_is_dlpack_compatible:
+            with pytest.raises(BufferError, match="IEEE floating point"):
+                np.from_dlpack(x)
+            return
 
+        y = np.from_dlpack(x)
         assert y.dtype == x.dtype
         assert_array_equal(x, y)
 
@@ -273,11 +288,17 @@ class TestScalarDLPack:
             np.float16,
             np.float32,
             np.float64,
+            np.longdouble,
             np.complex128,
         ],
     )
     def test_dlpack(self, dtype):
         x = dtype(2)
+        if dtype is np.longdouble and not _longdouble_is_dlpack_compatible:
+            with pytest.raises(BufferError, match="IEEE floating point"):
+                np.from_dlpack(x)
+            return
+
         y = np.from_dlpack(x)
 
         assert x.dtype == y.dtype
