@@ -1,0 +1,545 @@
+/*
+ * FFT gufuncs backed by DUCC.
+ *
+ * DUCC's FFT sources are dual-licensed under BSD-3-Clause or GPL-2.0-or-later.
+ * NumPy uses them under BSD-3-Clause.
+ */
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
+
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+#include <assert.h>
+
+#include <complex>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <exception>
+#include <limits>
+#include <new>
+#include <vector>
+
+#include "numpy/arrayobject.h"
+#include "numpy/ufuncobject.h"
+
+#include "npy_config.h"
+
+#include "ducc0/fft/fftnd_impl.h"
+
+using ducc_shape_t = ducc0::fmav_info::shape_t;
+using ducc_stride_t = ducc0::fmav_info::stride_t;
+
+template<PyUFuncGenericFunction cpp_ufunc>
+static void
+wrap_legacy_cpp_ufunc(char **args, npy_intp const *dimensions,
+                      npy_intp const *steps, void *func)
+{
+    NPY_ALLOW_C_API_DEF
+    try {
+        cpp_ufunc(args, dimensions, steps, func);
+    }
+    catch (const std::bad_alloc&) {
+        NPY_ALLOW_C_API;
+        PyErr_NoMemory();
+        NPY_DISABLE_C_API;
+    }
+    catch (const std::exception& e) {
+        NPY_ALLOW_C_API;
+        PyErr_SetString(PyExc_RuntimeError, e.what());
+        NPY_DISABLE_C_API;
+    }
+}
+
+template <typename T>
+static inline T
+load_unaligned(const char *ptr)
+{
+    T value;
+    std::memcpy(&value, ptr, sizeof(T));
+    return value;
+}
+
+template <typename T>
+static inline void
+copy_input(char *in, npy_intp step, size_t nin, T *buffer, size_t n)
+{
+    size_t ncopy = nin < n ? nin : n;
+    for (size_t i = 0; i < ncopy; ++i, in += step) {
+        buffer[i] = load_unaligned<T>(in);
+    }
+    for (size_t i = ncopy; i < n; ++i) {
+        buffer[i] = T(0);
+    }
+}
+
+template <typename T>
+static inline void
+copy_output(const T *buffer, char *out, npy_intp step, size_t n)
+{
+    for (size_t i = 0; i < n; ++i, out += step) {
+        std::memcpy(out, &buffer[i], sizeof(T));
+    }
+}
+
+template <typename T>
+static inline bool
+can_use_direct_view(const void *ptr, npy_intp outer_stride,
+                    npy_intp inner_stride)
+{
+    return reinterpret_cast<std::uintptr_t>(ptr) % alignof(T) == 0 &&
+           outer_stride % static_cast<npy_intp>(sizeof(T)) == 0 &&
+           inner_stride % static_cast<npy_intp>(sizeof(T)) == 0;
+}
+
+static bool
+memory_range(const char *ptr, size_t n_outer, size_t n_inner,
+             npy_intp outer_stride, npy_intp inner_stride, size_t itemsize,
+             std::uintptr_t *begin, std::uintptr_t *end)
+{
+    std::uintptr_t low = reinterpret_cast<std::uintptr_t>(ptr);
+    std::uintptr_t high = low;
+    const auto max_uint = std::numeric_limits<std::uintptr_t>::max();
+
+    auto add_extent = [&](npy_intp stride, size_t size) {
+        if (size <= 1 || stride == 0) {
+            return true;
+        }
+        bool negative = stride < 0;
+        std::uintptr_t magnitude = negative
+            ? std::uintptr_t(-(stride + 1)) + 1
+            : std::uintptr_t(stride);
+        size_t extent = size - 1;
+        if (magnitude != 0 && extent > max_uint / magnitude) {
+            return false;
+        }
+        std::uintptr_t offset = extent * magnitude;
+        if (negative) {
+            if (low < offset) {
+                return false;
+            }
+            low -= offset;
+        }
+        else {
+            if (high > max_uint - offset) {
+                return false;
+            }
+            high += offset;
+        }
+        return true;
+    };
+
+    if (!add_extent(outer_stride, n_outer) ||
+        !add_extent(inner_stride, n_inner) ||
+        high > max_uint - itemsize) {
+        return false;
+    }
+    *begin = low;
+    *end = high + itemsize;
+    return true;
+}
+
+/* DUCC only permits separate input and output views when they do not overlap.
+ * The bounds check is deliberately conservative: strided views with holes may
+ * be classified as overlapping and use the staged path instead.
+ */
+template <typename Tin, typename Tout>
+static bool
+may_overlap(const char *input, const char *output, size_t n_outer,
+            size_t n_input, size_t n_output, npy_intp input_outer_stride,
+            npy_intp input_inner_stride, npy_intp output_outer_stride,
+            npy_intp output_inner_stride)
+{
+    if (n_outer == 0 || n_input == 0 || n_output == 0) {
+        return false;
+    }
+    std::uintptr_t input_begin, input_end, output_begin, output_end;
+    if (!memory_range(input, n_outer, n_input, input_outer_stride,
+                      input_inner_stride, sizeof(Tin), &input_begin,
+                      &input_end) ||
+        !memory_range(output, n_outer, n_output, output_outer_stride,
+                      output_inner_stride, sizeof(Tout), &output_begin,
+                      &output_end)) {
+        return true;
+    }
+    return input_begin < output_end && output_begin < input_end;
+}
+
+template <typename T>
+static inline ptrdiff_t
+element_stride(npy_intp byte_stride)
+{
+    return static_cast<ptrdiff_t>(
+        byte_stride / static_cast<npy_intp>(sizeof(T)));
+}
+
+template <typename Tin, typename Tout, typename Scale, typename Transform>
+static bool
+run_direct(char *ip, char *fp, char *op, size_t n_outer,
+           size_t nin, size_t nout, npy_intp si, npy_intp so,
+           npy_intp step_in, npy_intp step_out, bool allow_inplace,
+           Transform&& transform)
+{
+    // DUCC can consume NumPy's strided storage directly when the byte strides
+    // are element strides, the data is aligned, and the views are compatible.
+    if (!can_use_direct_view<Tin>(ip, si, step_in) ||
+        !can_use_direct_view<Tout>(op, so, step_out)) {
+        return false;
+    }
+
+    bool overlap = may_overlap<Tin, Tout>(
+        ip, op, n_outer, nin, nout, si, step_in, so, step_out);
+    // DUCC permits c2c in-place operation only for the same view. Real/complex
+    // transforms always take the staged path when the views overlap.
+    bool exact_inplace = allow_inplace &&
+        ip == op && si == so && step_in == step_out;
+    if (overlap && !exact_inplace) {
+        return false;
+    }
+
+    ducc_shape_t shape_in{n_outer, nin};
+    ducc_shape_t shape_out{n_outer, nout};
+    ducc_stride_t strides_in{
+        element_stride<Tin>(si), element_stride<Tin>(step_in)};
+    ducc_stride_t strides_out{
+        element_stride<Tout>(so), element_stride<Tout>(step_out)};
+    ducc_shape_t axes{1};
+
+    auto in = ducc0::cfmav<Tin>(
+        reinterpret_cast<const Tin *>(ip), shape_in, strides_in);
+    auto out = ducc0::vfmav<Tout>(
+        reinterpret_cast<Tout *>(op), shape_out, strides_out);
+    transform(in, out, axes, load_unaligned<Scale>(fp));
+    return true;
+}
+
+template <typename Tin, typename Tout, typename Scale, typename Transform>
+static void
+run_staged(char *ip, char *fp, char *op, size_t n_outer,
+           size_t nin_available, size_t nin, size_t nout,
+           npy_intp si, npy_intp sf, npy_intp so,
+           npy_intp step_in, npy_intp step_out, Transform&& transform)
+{
+    size_t n_input = nin_available < nin ? nin_available : nin;
+    // Preserve all input transforms before writing an overlapping output.
+    bool overlap = may_overlap<Tin, Tout>(
+        ip, op, n_outer, n_input, nout, si, step_in, so, step_out);
+    size_t input_size = nin;
+    if (overlap) {
+        if (nin != 0 && n_outer > std::numeric_limits<size_t>::max() / nin) {
+            throw std::bad_alloc();
+        }
+        input_size = n_outer * nin;
+    }
+    std::vector<Tin> input(input_size);
+    std::vector<Tout> output(nout);
+    ducc_shape_t shape_in{nin};
+    ducc_shape_t shape_out{nout};
+    ducc_stride_t stride{1};
+    ducc_shape_t axes{0};
+    auto in = ducc0::cfmav<Tin>(input.data(), shape_in, stride);
+    auto out = ducc0::vfmav<Tout>(output.data(), shape_out, stride);
+
+    if (overlap) {
+        char *input_ptr = ip;
+        for (size_t i = 0; i < n_outer; ++i) {
+            copy_input(input_ptr, step_in, n_input,
+                       input.data() + i * nin, nin);
+            input_ptr += si;
+        }
+    }
+
+    for (size_t i = 0; i < n_outer; ++i, ip += si, fp += sf, op += so) {
+        if (!overlap) {
+            copy_input(ip, step_in, n_input, input.data(), nin);
+        }
+        auto input_view = overlap
+            ? ducc0::cfmav<Tin>(input.data() + i * nin, shape_in, stride)
+            : in;
+        transform(input_view, out, axes, load_unaligned<Scale>(fp));
+        copy_output(output.data(), op, step_out, nout);
+    }
+}
+
+template <typename T>
+static void
+fft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
+         void *func)
+{
+    using complex_t = std::complex<T>;
+
+    char *ip = args[0], *fp = args[1], *op = args[2];
+    size_t n_outer = static_cast<size_t>(dimensions[0]);
+    npy_intp si = steps[0], sf = steps[1], so = steps[2];
+    size_t nin = static_cast<size_t>(dimensions[1]);
+    size_t nout = static_cast<size_t>(dimensions[2]);
+    npy_intp step_in = steps[3], step_out = steps[4];
+    bool forward = *static_cast<bool *>(func);
+
+    assert(nout > 0);
+    if (n_outer == 0) {
+        return;
+    }
+
+    auto transform = [forward](const auto& in, auto& out,
+                               const ducc_shape_t& axes, T fct) {
+        ducc0::c2c(in, out, axes, forward, fct, 1);
+    };
+
+    if (sf == 0 && nin >= nout &&
+        run_direct<complex_t, complex_t, T>(
+            ip, fp, op, n_outer, nout, nout,
+            si, so, step_in, step_out, true, transform)) {
+        return;
+    }
+
+    run_staged<complex_t, complex_t, T>(
+        ip, fp, op, n_outer, nin, nout, nout,
+        si, sf, so, step_in, step_out, transform);
+}
+
+template <typename T>
+static void
+rfft_impl(char **args, npy_intp const *dimensions, npy_intp const *steps,
+          size_t npts)
+{
+    using complex_t = std::complex<T>;
+
+    char *ip = args[0], *fp = args[1], *op = args[2];
+    size_t n_outer = static_cast<size_t>(dimensions[0]);
+    npy_intp si = steps[0], sf = steps[1], so = steps[2];
+    size_t nin = static_cast<size_t>(dimensions[1]);
+    size_t nout = static_cast<size_t>(dimensions[2]);
+    npy_intp step_in = steps[3], step_out = steps[4];
+
+    assert(nout > 0 && nout == npts / 2 + 1);
+    if (n_outer == 0) {
+        return;
+    }
+
+    auto transform = [](const auto& in, auto& out,
+                        const ducc_shape_t& axes, T fct) {
+        ducc0::r2c(in, out, axes, true, fct, 1);
+    };
+
+    if (sf == 0 && nin >= npts &&
+        run_direct<T, complex_t, T>(
+            ip, fp, op, n_outer, npts, nout,
+            si, so, step_in, step_out, false, transform)) {
+        return;
+    }
+
+    run_staged<T, complex_t, T>(
+        ip, fp, op, n_outer, nin, npts, nout,
+        si, sf, so, step_in, step_out, transform);
+}
+
+template <typename T>
+static void
+rfft_n_even_loop(char **args, npy_intp const *dimensions,
+                 npy_intp const *steps, void * /*func*/)
+{
+    size_t nout = static_cast<size_t>(dimensions[2]);
+    assert(nout > 0);
+    rfft_impl<T>(args, dimensions, steps, 2 * nout - 2);
+}
+
+template <typename T>
+static void
+rfft_n_odd_loop(char **args, npy_intp const *dimensions,
+                npy_intp const *steps, void * /*func*/)
+{
+    size_t nout = static_cast<size_t>(dimensions[2]);
+    assert(nout > 0);
+    rfft_impl<T>(args, dimensions, steps, 2 * nout - 1);
+}
+
+template <typename T>
+static void
+irfft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
+           void * /*func*/)
+{
+    using complex_t = std::complex<T>;
+
+    char *ip = args[0], *fp = args[1], *op = args[2];
+    size_t n_outer = static_cast<size_t>(dimensions[0]);
+    npy_intp si = steps[0], sf = steps[1], so = steps[2];
+    size_t nin = static_cast<size_t>(dimensions[1]);
+    size_t nout = static_cast<size_t>(dimensions[2]);
+    npy_intp step_in = steps[3], step_out = steps[4];
+    size_t npts_in = nout / 2 + 1;
+
+    assert(nout > 0);
+    if (n_outer == 0) {
+        return;
+    }
+
+    auto transform = [](const auto& in, auto& out,
+                        const ducc_shape_t& axes, T fct) {
+        ducc0::c2r(in, out, axes, false, fct, 1);
+    };
+
+    if (sf == 0 && nin >= npts_in &&
+        run_direct<complex_t, T, T>(
+            ip, fp, op, n_outer, npts_in, nout,
+            si, so, step_in, step_out, false, transform)) {
+        return;
+    }
+
+    run_staged<complex_t, T, T>(
+        ip, fp, op, n_outer, nin, npts_in, nout,
+        si, sf, so, step_in, step_out, transform);
+}
+
+static bool ducc_forward = true;
+static bool ducc_backward = false;
+
+static PyUFuncGenericFunction fft_functions[] = {
+    wrap_legacy_cpp_ufunc<fft_loop<npy_double>>,
+    wrap_legacy_cpp_ufunc<fft_loop<npy_float>>,
+    wrap_legacy_cpp_ufunc<fft_loop<npy_longdouble>>
+};
+static const char fft_types[] = {
+    NPY_CDOUBLE, NPY_DOUBLE, NPY_CDOUBLE,
+    NPY_CFLOAT, NPY_FLOAT, NPY_CFLOAT,
+    NPY_CLONGDOUBLE, NPY_LONGDOUBLE, NPY_CLONGDOUBLE
+};
+static void *const fft_data[] = {
+    static_cast<void *>(&ducc_forward),
+    static_cast<void *>(&ducc_forward),
+    static_cast<void *>(&ducc_forward)
+};
+static void *const ifft_data[] = {
+    static_cast<void *>(&ducc_backward),
+    static_cast<void *>(&ducc_backward),
+    static_cast<void *>(&ducc_backward)
+};
+
+static PyUFuncGenericFunction rfft_n_even_functions[] = {
+    wrap_legacy_cpp_ufunc<rfft_n_even_loop<npy_double>>,
+    wrap_legacy_cpp_ufunc<rfft_n_even_loop<npy_float>>,
+    wrap_legacy_cpp_ufunc<rfft_n_even_loop<npy_longdouble>>
+};
+static PyUFuncGenericFunction rfft_n_odd_functions[] = {
+    wrap_legacy_cpp_ufunc<rfft_n_odd_loop<npy_double>>,
+    wrap_legacy_cpp_ufunc<rfft_n_odd_loop<npy_float>>,
+    wrap_legacy_cpp_ufunc<rfft_n_odd_loop<npy_longdouble>>
+};
+static const char rfft_types[] = {
+    NPY_DOUBLE, NPY_DOUBLE, NPY_CDOUBLE,
+    NPY_FLOAT, NPY_FLOAT, NPY_CFLOAT,
+    NPY_LONGDOUBLE, NPY_LONGDOUBLE, NPY_CLONGDOUBLE
+};
+
+static PyUFuncGenericFunction irfft_functions[] = {
+    wrap_legacy_cpp_ufunc<irfft_loop<npy_double>>,
+    wrap_legacy_cpp_ufunc<irfft_loop<npy_float>>,
+    wrap_legacy_cpp_ufunc<irfft_loop<npy_longdouble>>
+};
+static const char irfft_types[] = {
+    NPY_CDOUBLE, NPY_DOUBLE, NPY_DOUBLE,
+    NPY_CFLOAT, NPY_FLOAT, NPY_FLOAT,
+    NPY_CLONGDOUBLE, NPY_LONGDOUBLE, NPY_LONGDOUBLE
+};
+
+static int
+add_gufuncs(PyObject *dictionary)
+{
+    PyObject *f;
+
+    f = PyUFunc_FromFuncAndDataAndSignature(
+        fft_functions, fft_data, fft_types, 3, 2, 1, PyUFunc_None,
+        "fft", "complex forward FFT\n", 0, "(n),()->(m)");
+    if (f == NULL) {
+        return -1;
+    }
+    PyDict_SetItemString(dictionary, "fft", f);
+    Py_DECREF(f);
+
+    f = PyUFunc_FromFuncAndDataAndSignature(
+        fft_functions, ifft_data, fft_types, 3, 2, 1, PyUFunc_None,
+        "ifft", "complex backward FFT\n", 0, "(m),()->(n)");
+    if (f == NULL) {
+        return -1;
+    }
+    PyDict_SetItemString(dictionary, "ifft", f);
+    Py_DECREF(f);
+
+    f = PyUFunc_FromFuncAndDataAndSignature(
+        rfft_n_even_functions, NULL, rfft_types, 3, 2, 1, PyUFunc_None,
+        "rfft_n_even", "real forward FFT for even n\n", 0, "(n),()->(m)");
+    if (f == NULL) {
+        return -1;
+    }
+    PyDict_SetItemString(dictionary, "rfft_n_even", f);
+    Py_DECREF(f);
+
+    f = PyUFunc_FromFuncAndDataAndSignature(
+        rfft_n_odd_functions, NULL, rfft_types, 3, 2, 1, PyUFunc_None,
+        "rfft_n_odd", "real forward FFT for odd n\n", 0, "(n),()->(m)");
+    if (f == NULL) {
+        return -1;
+    }
+    PyDict_SetItemString(dictionary, "rfft_n_odd", f);
+    Py_DECREF(f);
+
+    f = PyUFunc_FromFuncAndDataAndSignature(
+        irfft_functions, NULL, irfft_types, 3, 2, 1, PyUFunc_None,
+        "irfft", "real backward FFT\n", 0, "(m),()->(n)");
+    if (f == NULL) {
+        return -1;
+    }
+    PyDict_SetItemString(dictionary, "irfft", f);
+    Py_DECREF(f);
+    return 0;
+}
+
+static int module_loaded = 0;
+
+static int
+_duccfft_umath_exec(PyObject *m)
+{
+    if (module_loaded) {
+        PyErr_SetString(PyExc_ImportError,
+                        "cannot load module more than once per process");
+        return -1;
+    }
+    module_loaded = 1;
+
+    if (PyArray_ImportNumPyAPI() < 0) {
+        return -1;
+    }
+    if (PyUFunc_ImportUFuncAPI() < 0) {
+        return -1;
+    }
+
+    if (add_gufuncs(PyModule_GetDict(m)) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static struct PyModuleDef_Slot _duccfft_umath_slots[] = {
+    {Py_mod_exec, (void*)_duccfft_umath_exec},
+#if PY_VERSION_HEX >= 0x030c00f0
+    {Py_mod_multiple_interpreters, Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED},
+#endif
+#if PY_VERSION_HEX >= 0x030d00f0 && (!defined(Py_LIMITED_API) || Py_LIMITED_API >= 0x030d0000)
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
+    {0, NULL},
+};
+
+static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "_duccfft_umath",
+    NULL,
+    0,
+    NULL,
+    _duccfft_umath_slots,
+};
+
+PyMODINIT_FUNC
+PyInit__duccfft_umath(void)
+{
+    return PyModuleDef_Init(&moduledef);
+}

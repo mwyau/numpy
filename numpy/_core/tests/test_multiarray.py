@@ -5281,7 +5281,7 @@ class TestCAPI:
         "entry_point",
         [
             module + item
-            for item in ("sin", "strings.str_len", "fft._pocketfft_umath.ifft")
+            for item in ("sin", "strings.str_len", "fft._duccfft_umath.ifft")
             for module in ("", "numpy:")
         ] + [
             "numpy.strings:str_len",
