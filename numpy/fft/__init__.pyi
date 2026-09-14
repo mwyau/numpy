@@ -1,5 +1,4 @@
-from ._helper import fftfreq, fftshift, ifftshift, rfftfreq
-from ._pocketfft import (
+from ._ducc import (
     fft,
     fft2,
     fftn,
@@ -15,6 +14,7 @@ from ._pocketfft import (
     rfft2,
     rfftn,
 )
+from ._helper import fftfreq, fftshift, ifftshift, rfftfreq
 
 __all__ = [
     "fft",

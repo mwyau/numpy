@@ -200,11 +200,11 @@ For examples, see the various functions.
 
 """
 
-from . import _helper, _pocketfft
+from . import _ducc, _helper
+from ._ducc import *
 from ._helper import *
-from ._pocketfft import *
 
-__all__ = _pocketfft.__all__.copy()  # noqa: PLE0605
+__all__ = _ducc.__all__.copy()  # noqa: PLE0605
 __all__ += _helper.__all__
 
 from numpy._pytesttester import PytestTester

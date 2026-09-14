@@ -174,6 +174,113 @@ class TestFFT1D:
         assert result6 is out6
         assert_array_equal(result6, expected1)
 
+    @pytest.mark.parametrize("dtype", [np.complex64, np.complex128,
+                                        np.clongdouble])
+    def test_fft_unaligned_input_and_output(self, dtype):
+        dtype = np.dtype(dtype)
+        n = 8
+        input_storage = bytearray(1 + n * dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=input_storage, offset=1)
+        x[...] = np.arange(n) + 1j * np.arange(n)[::-1]
+
+        output_storage = bytearray(1 + n * dtype.itemsize)
+        out = np.ndarray(n, dtype=dtype, buffer=output_storage, offset=1)
+        expected = np.fft.fft(x.copy())
+        result = np.fft.fft(x, out=out)
+
+        assert not x.flags.aligned
+        assert not out.flags.aligned
+        assert result is out
+        assert_allclose(result, expected)
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64, np.longdouble])
+    def test_rfft_unaligned_input_and_output(self, dtype):
+        dtype = np.dtype(dtype)
+        output_dtype = np.result_type(dtype, 1j)
+        n = 8
+        input_storage = bytearray(1 + n * dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=input_storage, offset=1)
+        x[...] = np.arange(n, dtype=dtype)
+
+        output_storage = bytearray(1 + (n // 2 + 1) * output_dtype.itemsize)
+        out = np.ndarray(n // 2 + 1, dtype=output_dtype,
+                         buffer=output_storage, offset=1)
+        expected = np.fft.rfft(x.copy())
+        result = np.fft.rfft(x, out=out)
+
+        assert not x.flags.aligned
+        assert not out.flags.aligned
+        assert result is out
+        assert_allclose(result, expected)
+
+    def test_rfft_non_element_byte_stride(self):
+        dtype = np.dtype(np.float64)
+        n = 7
+        byte_stride = 12
+        storage = bytearray((n - 1) * byte_stride + dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=storage,
+                       strides=(byte_stride,))
+        x[...] = np.arange(n)
+        expected = np.fft.rfft(np.ascontiguousarray(x))
+        result = np.fft.rfft(x)
+
+        assert x.strides[0] % x.itemsize != 0
+        assert_allclose(result, expected)
+
+    def test_fft_non_element_byte_stride(self):
+        dtype = np.dtype(np.complex128)
+        n = 7
+        byte_stride = 20
+        storage = bytearray((n - 1) * byte_stride + dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=storage,
+                       strides=(byte_stride,))
+        x[...] = np.arange(n) + 1j * np.arange(n)[::-1]
+        expected = np.fft.fft(np.ascontiguousarray(x))
+        result = np.fft.fft(x)
+
+        assert x.strides[0] % x.itemsize != 0
+        assert_allclose(result, expected)
+
+    def test_rfft_overlapping_out(self):
+        base = np.arange(6, dtype=np.float64)
+        x = base[:4]
+        out = base.view(np.complex128)[:3]
+        expected = np.fft.rfft(x.copy())
+        result = np.fft.rfft(x, out=out)
+
+        assert np.shares_memory(x, out)
+        assert result is out
+        assert_allclose(result, expected)
+
+    def test_irfft_overlapping_out(self):
+        n = 6
+        storage = bytearray(4 * np.dtype(np.complex128).itemsize)
+        x = np.ndarray(n // 2 + 1, dtype=np.complex128,
+                       buffer=storage, offset=0)
+        out = np.ndarray(n, dtype=np.float64, buffer=storage, offset=0)
+        x[...] = np.arange(x.size) + 1j * np.arange(x.size)[::-1]
+        expected = np.fft.irfft(x.copy(), n=n)
+        result = np.fft.irfft(x, n=n, out=out)
+
+        assert np.shares_memory(x, out)
+        assert result is out
+        assert_allclose(result, expected)
+
+    @pytest.mark.parametrize(
+        "function, input_dtype, input_size, output_shape, output_dtype", [
+        (np.fft.fft, np.complex64, 8, (0, 8), np.complex64),
+        (np.fft.rfft, np.float32, 8, (0, 5), np.complex64),
+        (np.fft.irfft, np.complex64, 5, (0, 8), np.float32),
+    ])
+    def test_zero_sized_outer_dimension(self, function, input_dtype, input_size,
+                                        output_shape, output_dtype):
+        x = np.empty((0, input_size),
+                     dtype=input_dtype)
+        result = function(x, axis=-1)
+
+        assert result.shape == output_shape
+        assert result.dtype == output_dtype
+
     def test_fft_bad_out(self):
         x = np.arange(30.)
         with pytest.raises(TypeError, match="must be of ArrayType"):
