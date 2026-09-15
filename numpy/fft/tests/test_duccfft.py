@@ -608,6 +608,10 @@ def test_fft_with_order(dtype, order, fft):
     X = rng.rand(8, 7, 13).astype(dtype, copy=False)
     # See discussion in pull/14178
     _tol = 8.0 * np.sqrt(np.log2(X.size)) * np.finfo(X.dtype).eps
+    if fft.__name__.endswith('fftn'):
+        # Native multidimensional transforms may traverse different strides
+        # in C- and Fortran-order inputs, so their rounding can differ.
+        _tol *= 8
     if order == 'F':
         Y = np.asfortranarray(X)
     else:

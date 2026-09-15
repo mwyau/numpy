@@ -46,6 +46,7 @@ from numpy._core import (
 from numpy.lib.array_utils import normalize_axis_index
 
 from . import _duccfft_umath as duccfft
+from ._ducc_nd import _native_fftnd, _native_irfftn, _native_rfftn
 
 array_function_dispatch = functools.partial(
     overrides.array_function_dispatch, module='numpy.fft')
@@ -742,6 +743,14 @@ def _cook_nd_args(a, s=None, axes=None, invreal=0):
 def _raw_fftnd(a, s=None, axes=None, function=fft, norm=None, out=None):
     a = asarray(a)
     s, axes = _cook_nd_args(a, s, axes)
+    if function is fft:
+        native = _native_fftnd(a, s, axes, norm, out, True)
+        if native is not None:
+            return native
+    elif function is ifft:
+        native = _native_fftnd(a, s, axes, norm, out, False)
+        if native is not None:
+            return native
     itl = list(range(len(axes)))
     itl.reverse()
     for ii in itl:
@@ -1385,6 +1394,9 @@ def rfftn(a, s=None, axes=None, norm=None, out=None):
     """
     a = asarray(a)
     s, axes = _cook_nd_args(a, s, axes)
+    native = _native_rfftn(a, s, axes, norm, out)
+    if native is not None:
+        return native
     a = rfft(a, s[-1], axes[-1], norm, out=out)
     for ii in range(len(axes) - 2, -1, -1):
         a = fft(a, s[ii], axes[ii], norm, out=out)
@@ -1604,6 +1616,9 @@ def irfftn(a, s=None, axes=None, norm=None, out=None):
     """
     a = asarray(a)
     s, axes = _cook_nd_args(a, s, axes, invreal=1)
+    native = _native_irfftn(a, s, axes, norm, out)
+    if native is not None:
+        return native
     for ii in range(len(axes) - 1):
         a = ifft(a, s[ii], axes[ii], norm)
     a = irfft(a, s[-1], axes[-1], norm, out=out)

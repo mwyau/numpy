@@ -27,11 +27,22 @@ py.extension_module('_duccfft_umath',
   limited_api: py_limited_api,
 )
 
+py.extension_module('_ducc_nd_umath',
+  ['_ducc_nd_umath.cpp'] + duccfft_sources,
+  cpp_args: largefile_define + duccfft_args,
+  include_directories: include_directories('ducc0'),
+  dependencies: np_core_dep,
+  install: true,
+  subdir: 'numpy/fft',
+  limited_api: py_limited_api,
+)
+
 py.install_sources(
   [
     '__init__.py',
     '__init__.pyi',
     '_ducc.py',
+    '_ducc_nd.py',
     '_ducc.pyi',
     '_helper.py',
     '_helper.pyi',
@@ -44,6 +55,7 @@ py.install_sources(
     'tests/__init__.py',
     'tests/test_helper.py',
     'tests/test_duccfft.py',
+    'tests/test_ducc_nd.py',
   ],
   subdir: 'numpy/fft/tests',
   install_tag: 'tests'
