@@ -96,10 +96,15 @@ recorded.
 | `final_v2` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-final-v2/usr/lib/python3.14/site-packages` |
 | `old_v3` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-old-v3/usr/local/lib/python3.14/site-packages` |
 | `final_v3` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-final-v3/usr/lib/python3.14/site-packages` |
+| `rowloop` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-rowloop/usr/local/lib/python3.14/site-packages` |
+| `cpudispatch_v2` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v2/usr/local/lib/python3.14/site-packages` |
+| `cpudispatch_v3` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v3/usr/local/lib/python3.14/site-packages` |
 
 The `current_final`, V2, and V3 final stages contain the typed-factor Python
 wrapper. `final` is the retained staged-only pre-factor comparison; it is
 kept for historical raw results and is not the current production candidate.
+`rowloop` is the rejected direct ordinary-batch control. The `cpudispatch_*`
+stages are isolated runtime-dispatch prototypes, not production stages.
 
 ## DUCC-side experiment stages
 
@@ -123,3 +128,13 @@ two lanes. The explicit experiment adds a named internal
 adapter calls it only for batched complex128 c2c. Neither experiment changes
 `_ducc_nd_umath`, native N-D dispatch, or any N-D benchmark. The experiment
 builds retain `DUCC0_NO_FFT_CACHE` and `DUCC0_NO_LOWLEVEL_THREADING`.
+
+## Isolated CPU-dispatch prototype
+
+The prototype worktree is `/home/albert/numpy-cpudispatch`, detached from the
+current production commit. It uses `X86_V2` as the baseline and `X86_V3` as a
+runtime-dispatch target, with only the c2c loop entry points dispatched. The
+prototype links a private copy of NumPy's CPU-feature runtime so that it does
+not depend on hidden symbols from `_multiarray_umath`. It retains the same
+cache-off and one-thread DUCC flags as the production build. The prototype is
+kept for linker, symbol, fallback, and performance evidence only.

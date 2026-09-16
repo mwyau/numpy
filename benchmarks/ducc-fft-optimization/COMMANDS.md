@@ -52,11 +52,16 @@ It contains `-DDUCC0_NO_FFT_CACHE` and
 
 ## FFT tests and correctness
 
+Use the installed test directory explicitly. This avoids the editable finder
+in the development environment and keeps pytest's import path tied to the
+staged candidate.
+
 ```bash
+stage=/absolute/path/to/stage/usr/lib/python3.14/site-packages
 env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     NUMEXPR_NUM_THREADS=1 \
-    PYTHONPATH=/absolute/path/to/stage/usr/lib/python3.14/site-packages:/home/albert/numpy/.venv/lib/python3.14/site-packages \
-    /home/albert/numpy/.venv/bin/python -S -m pytest --pyargs numpy.fft.tests \
+    PYTHONPATH="$stage:/home/albert/numpy/.venv/lib/python3.14/site-packages" \
+    /home/albert/numpy/.venv/bin/python -S -m pytest "$stage/numpy/fft/tests" \
     -q --disable-warnings
 
 env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
@@ -65,7 +70,7 @@ env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     /home/albert/numpy/.venv/bin/python -S \
     benchmarks/ducc-fft-optimization/correctness_matrix.py \
     --old-stage /home/albert/numpy-fft-ducc-benchmark-20260914/stage-old/usr/local/lib/python3.14/site-packages \
-    --final-stage /home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-staged/usr/lib/python3.14/site-packages \
+    --final-stage /home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-fct/usr/lib/python3.14/site-packages \
     --output benchmarks/ducc-fft-optimization/results/correctness_old_final_fct.csv
 ```
 
@@ -96,6 +101,44 @@ driver with sizes `1024 2048 3072 3584 4095 4096 4097 4608 8192 16384 32768
 65536`, batches `1 2 8 64 256`, and the corresponding `old_v2/final_v2` or
 `old_v3/final_v3` stage paths.
 
+### Direct ordinary-batch row-loop control
+
+This control starts at the current production commit
+`140acd6d898d681ae3e41150e9883bb22f3edfa2`, not at c222. It is a NumPy-side
+experiment and does not modify vendored DUCC:
+
+```bash
+git worktree add --detach /home/albert/numpy-rowloop \
+    140acd6d898d681ae3e41150e9883bb22f3edfa2
+git -C /home/albert/numpy-rowloop submodule update --init --recursive
+git -C /home/albert/numpy-rowloop apply \
+    /home/albert/numpy/benchmarks/ducc-fft-optimization/experimental_patches/ducc-direct-rowloop.patch
+
+cd /home/albert/numpy-rowloop
+env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    setup --wipe build-rowloop . -Dbuildtype=debugoptimized \
+    -Dcpu-baseline=min -Dcpu-dispatch=max
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/ninja -C build-rowloop -j16
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    install -C build-rowloop --destdir \
+    /home/albert/numpy-fft-ducc-benchmark-20260914/stage-rowloop --no-rebuild
+
+cd /home/albert/numpy
+env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 PYTHONPATH=/home/albert/numpy/.venv/lib/python3.14/site-packages \
+    /home/albert/numpy/.venv/bin/python -S \
+    benchmarks/ducc-fft-optimization/batch_compare.py \
+    --candidate old=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-old/usr/local/lib/python3.14/site-packages \
+    --candidate c222=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-ducc/usr/local/lib/python3.14/site-packages \
+    --candidate current_final=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-fct/usr/lib/python3.14/site-packages \
+    --candidate rowloop=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-rowloop/usr/local/lib/python3.14/site-packages \
+    --output benchmarks/ducc-fft-optimization/results/c2c_batch_compare_rowloop.csv
+```
+
 ## Static and script checks
 
 ```bash
@@ -110,6 +153,72 @@ env NPY_DISABLE_CPU_FEATURES=AVX2 PYTHONPATH=/absolute/v3/stage \
 env PYTHONPATH=/home/albert/numpy/.venv/lib/python3.14/site-packages \
     /home/albert/numpy/.venv/bin/python -S -m py_compile \
     benchmarks/ducc-fft-optimization/*.py
+```
+
+The isolated CPU-dispatch prototype was built in
+`/home/albert/numpy-cpudispatch` with the existing c2c wrapper as the only
+dispatched source. Its V2 baseline and V2-plus-V3-dispatch builds used:
+
+```bash
+cd /home/albert/numpy-cpudispatch
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    setup --wipe build-cpudispatch-v2 . -Dbuildtype=debugoptimized \
+    -Dcpu-baseline=X86_V2 -Dcpu-dispatch=none
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    compile -C build-cpudispatch-v2 -j16
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    install -C build-cpudispatch-v2 --destdir \
+    /home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v2 --no-rebuild
+
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    setup --wipe build-cpudispatch-v3 . -Dbuildtype=debugoptimized \
+    -Dcpu-baseline=X86_V2 -Dcpu-dispatch=X86_V3
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    compile -C build-cpudispatch-v3 -j16
+env PATH=/home/albert/numpy/.venv/bin:$PATH \
+    /home/albert/numpy/.venv/bin/python vendored-meson/meson/meson.py \
+    install -C build-cpudispatch-v3 --destdir \
+    /home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v3 --no-rebuild
+```
+
+The full c2c comparison and repeat large-focus comparison were:
+
+```bash
+cd /home/albert/numpy
+env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 PYTHONPATH=/home/albert/numpy/.venv/lib/python3.14/site-packages \
+    /home/albert/numpy/.venv/bin/python -S \
+    benchmarks/ducc-fft-optimization/batch_compare.py \
+    --candidate current_final=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-fct/usr/lib/python3.14/site-packages \
+    --candidate cpudispatch_v2=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v2/usr/local/lib/python3.14/site-packages \
+    --candidate cpudispatch_v3=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v3/usr/local/lib/python3.14/site-packages \
+    --output benchmarks/ducc-fft-optimization/results/c2c_batch_compare_cpudispatch.csv
+
+env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 PYTHONPATH=/home/albert/numpy/.venv/lib/python3.14/site-packages \
+    /home/albert/numpy/.venv/bin/python -S \
+    benchmarks/ducc-fft-optimization/batch_compare.py \
+    --candidate current_final=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-fct/usr/lib/python3.14/site-packages \
+    --candidate cpudispatch_v2=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v2/usr/local/lib/python3.14/site-packages \
+    --candidate cpudispatch_v3=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v3/usr/local/lib/python3.14/site-packages \
+    --output benchmarks/ducc-fft-optimization/results/c2c_batch_compare_cpudispatch_focus.csv \
+    --sizes 8192 16384 32768 65536 --batches 8 32 64 256
+
+env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 PYTHONPATH=/home/albert/numpy/.venv/lib/python3.14/site-packages \
+    /home/albert/numpy/.venv/bin/python -S \
+    benchmarks/ducc-fft-optimization/ducc_policy_rss.py \
+    --candidate current_final=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-fct/usr/lib/python3.14/site-packages \
+    --candidate cpudispatch_v2=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v2/usr/local/lib/python3.14/site-packages \
+    --candidate cpudispatch_v3=/home/albert/numpy-fft-ducc-benchmark-20260914/stage-cpudispatch-v3/usr/local/lib/python3.14/site-packages \
+    --output benchmarks/ducc-fft-optimization/results/rss_cpudispatch_complex128.csv \
+    --operation fft --dtype complex128 --sizes 65536 --batches 8 32 64 256 \
+    --samples 3 --repeats 2
 ```
 
 ## DUCC-side batch-policy experiment

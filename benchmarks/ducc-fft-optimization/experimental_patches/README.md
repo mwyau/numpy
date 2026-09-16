@@ -16,21 +16,31 @@ dimensional shape only for direct c2c calls.
 
 ## Direct row loop with a reusable c2c plan — rejected for ordinary batches
 
-Two variants were measured across the c2c length/batch matrix:
+The first two local-plan variants were measured as staged/local-plan controls:
 
 * `c2c_batch_compare.csv`: low-level row loop with vectorized execution
   enabled;
 * `c2c_batch_compare_novec.csv`: the same design with low-level vectorization
   disabled.
 
-The vectorized row-loop candidate was approximately parity with unchanged
-c222 overall but was slower in several batched clusters. The scalar variant
-was often 5--20% faster than c222 for large complex128 batches, but had
-reproducible 2.4--2.5x regressions for `ifft(complex64, n=4097,
-batch=4..256)`. It also remained slower than the old pocketfft backend in
-many large cases. No simple batch/length crossover was stable across dtype and
-operation, so the final direct path leaves ordinary contiguous batches on
-DUCC's generalized implementation.
+They are not a clean ordinary-direct row-loop comparison: the modified
+wrapper entered the local fallback before the normal direct path. The scalar
+control nevertheless exposed reproducible 2.4--2.5x regressions for
+`ifft(complex64, n=4097, batch=4..256)` and neither control recovered the old
+pocketfft behavior broadly.
+
+The clean ordinary-direct experiment is the separate
+[`ducc-direct-rowloop.patch`](ducc-direct-rowloop.patch). It was applied to
+the current production commit and only routes equal-length, no-stride,
+contiguous batches through one local plan and a row loop. Its full raw result
+is [`c2c_batch_compare_rowloop.csv`](../results/c2c_batch_compare_rowloop.csv).
+The row loop improved some complex128 forward batches, but regressed
+complex64 inverse batches and remained slower than pocketfft in the large
+focus. The focused RSS result is
+[`rss_rowloop_complex128.csv`](../results/rss_rowloop_complex128.csv). No
+portable batch/length crossover was stable across dtype and operation, so the
+final direct path leaves ordinary contiguous batches on DUCC's generalized
+implementation.
 
 The staged-only version is different: there is no competing generalized
 batch decision after the direct path declines, and its one-plan benefit is
@@ -93,5 +103,16 @@ entry points and portability/linker validation. Standalone `nm`/`readelf`
 inspection found local DUCC template symbols in the V2/V3 objects, but that
 alone is not enough to approve a new multi-target topology. The final diff
 therefore keeps the normal baseline build and records V3 as follow-up work.
+
+An isolated multi-target prototype was also built in
+`/home/albert/numpy-cpudispatch`, with the existing c2c entry points as the
+only dispatched functions. It passed the V2/V3 build, runtime fallback, symbol,
+correctness, and FFT-test checks, but the repeated large-focus raw result
+[`c2c_batch_compare_cpudispatch_focus.csv`](../results/c2c_batch_compare_cpudispatch_focus.csv)
+showed `current/dispatch_v3 = 0.954` median / `0.965` geometric mean, so the
+prototype was slower than the shipped stage. Its full matrix and RSS probe are
+[`c2c_batch_compare_cpudispatch.csv`](../results/c2c_batch_compare_cpudispatch.csv)
+and [`rss_cpudispatch_complex128.csv`](../results/rss_cpudispatch_complex128.csv).
+It remains evidence only and is not a production or DUCC-side patch.
 
 No multi-axis FFT experiment is represented by these alternatives.

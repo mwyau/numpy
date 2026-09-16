@@ -1,0 +1,117 @@
+diff --git a/numpy/fft/ducc0/fft/fftnd_impl.h b/numpy/fft/ducc0/fft/fftnd_impl.h
+index 6778254fd1..d297da6c48 100644
+--- a/numpy/fft/ducc0/fft/fftnd_impl.h
++++ b/numpy/fft/ducc0/fft/fftnd_impl.h
+@@ -608,10 +608,21 @@ template <typename T, size_t vlen> struct add_vec<Cmplx<T>, vlen>
+   { using type = Cmplx<typename simd_select<T, vlen>::type>; };
+ template <typename T, size_t vlen> using add_vec_t = typename add_vec<T, vlen>::type;
+ 
++struct ExecC2C;
++
++enum class batch_policy
++  {
++  // Select n_simul/n_bunch from strides and the working-set estimate.
++  automatic,
++  // Process contiguous batches in one SIMD-width group.
++  vectorize_contiguous,
++  };
++
+ template<typename Tplan, typename T, typename T0, typename Exec>
+ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
+   const shape_t &axes, T0 fct, size_t nthreads, const Exec &exec,
+-  const bool /*allow_inplace*/=true)
++  const bool /*allow_inplace*/=true,
++  const batch_policy policy=batch_policy::automatic)
+   {
+   if ((in.ndim()==1)&&(in.stride(0)==1)&&(out.stride(0)==1))
+     {
+@@ -689,6 +700,18 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
+           }
+         }
+ 
++      // A narrow SIMD width can still benefit from a vectorized batch when
++      // the individual transform no longer fits the vector working-set
++      // estimate.  Keep this c2c/double-specific; the real transforms use
++      // separate execution paths and should retain their existing policy.
++      if constexpr (is_same<Exec,ExecC2C>::value && is_same<T0,double>::value)
++        if (nostride && ((policy==batch_policy::vectorize_contiguous)
++                         || ((policy==batch_policy::automatic) && (vlen<=2))))
++          {
++          n_simul=vlen;
++          n_bunch=vlen;
++          }
++
+       bool inplace = (in.stride(axes[iax])==1) && (out.stride(axes[iax])==1) && (n_bunch==1);
+       MR_assert(n_bunch<=nmax, "must not happen");
+       TmpStorage<T,T0> storage(in.size()/len, len, max(plan->bufsize(),vplan->bufsize()), (n_bunch+vlen-1)/vlen, inplace);
+@@ -1374,9 +1397,9 @@ template<typename T> class Long1dPlan: public UnityRoots<T,complex<T>>
+       : UnityRoots<T,complex<T>>(length) {}
+   };
+ 
+-template<typename T> DUCC0_NOINLINE void c2c(const cfmav<complex<T>> &in,
++template<typename T> DUCC0_NOINLINE void c2c_impl(const cfmav<complex<T>> &in,
+   const vfmav<complex<T>> &out, const shape_t &axes, bool forward,
+-  T fct, size_t nthreads)
++  T fct, size_t nthreads, batch_policy policy)
+   {
+   util::sanity_check_onetype(in, out, in.data()==out.data(), axes);
+   if (in.size()==0) return;
+@@ -1403,7 +1426,7 @@ template<typename T> DUCC0_NOINLINE void c2c(const cfmav<complex<T>> &in,
+       auto fin2(in2.to_fmav());
+       auto ftmp(tmp.to_fmav());
+       auto fout2(out2.to_fmav());
+-      c2c(fin2, ftmp, {0}, forward, T(1), nthreads);
++      c2c_impl(fin2, ftmp, {0}, forward, T(1), nthreads, policy);
+       auto roots_p = get_plan<Long1dPlan<T>>(ip);
+       const auto &roots(*roots_p);
+       if (forward)
+@@ -1420,7 +1443,7 @@ template<typename T> DUCC0_NOINLINE void c2c(const cfmav<complex<T>> &in,
+               for (size_t j=0; j<f2; ++j)
+                 tmp(i,j) *= roots[i*j];
+           });
+-      c2c(ftmp, fout2, {1}, forward, fct, nthreads);
++      c2c_impl(ftmp, fout2, {1}, forward, fct, nthreads, policy);
+       return;
+       }
+     }
+@@ -1433,7 +1456,8 @@ template<typename T> DUCC0_NOINLINE void c2c(const cfmav<complex<T>> &in,
+       {
+       shape_t axes2(axes);
+       swap(axes2[0],axes2.back());
+-      general_nd<pocketfft_c<T>>(in2, out2, axes2, fct, nthreads, ExecC2C{forward});
++      general_nd<pocketfft_c<T>>(in2, out2, axes2, fct, nthreads,
++        ExecC2C{forward}, true, policy);
+       return;
+       }
+     for (size_t i=1; i<axes.size(); ++i)
+@@ -1441,11 +1465,28 @@ template<typename T> DUCC0_NOINLINE void c2c(const cfmav<complex<T>> &in,
+         {
+         shape_t axes2(axes);
+         swap(axes2[0],axes2[i]);
+-        general_nd<pocketfft_c<T>>(in2, out2, axes2, fct, nthreads, ExecC2C{forward});
++        general_nd<pocketfft_c<T>>(in2, out2, axes2, fct, nthreads,
++          ExecC2C{forward}, true, policy);
+         return;
+         }
+     }
+-  general_nd<pocketfft_c<T>>(in2, out2, axes, fct, nthreads, ExecC2C{forward});
++  general_nd<pocketfft_c<T>>(in2, out2, axes, fct, nthreads,
++    ExecC2C{forward}, true, policy);
++  }
++
++template<typename T> DUCC0_NOINLINE void c2c(const cfmav<complex<T>> &in,
++  const vfmav<complex<T>> &out, const shape_t &axes, bool forward,
++  T fct, size_t nthreads)
++  {
++  c2c_impl(in, out, axes, forward, fct, nthreads, batch_policy::automatic);
++  }
++
++template<typename T> DUCC0_NOINLINE void c2c_with_batch_policy(
++  const cfmav<complex<T>> &in, const vfmav<complex<T>> &out,
++  const shape_t &axes, bool forward, T fct, size_t nthreads,
++  batch_policy policy)
++  {
++  c2c_impl(in, out, axes, forward, fct, nthreads, policy);
+   }
+ 
+ template<typename T> DUCC0_NOINLINE void dct(const cfmav<T> &in, const vfmav<T> &out,

@@ -103,6 +103,27 @@ the automatic rule nor the explicit policy changes the real-transform source
 path. The V3 c2c complex128 row shows why the explicit policy should not be
 forced unconditionally on a wider SIMD build.
 
+## Direct row-loop control and rejection
+
+Before treating the DUCC-side policy as the answer, a clean NumPy-side control
+was built from the current production commit. It routed only ordinary
+contiguous batches through one local `pocketfft_c<T>` plan and a row loop; all
+single-transform, real-transform, staged, and overlap paths were left alone.
+The exact control patch is
+[`ducc-direct-rowloop.patch`](experimental_patches/ducc-direct-rowloop.patch),
+with raw full-matrix results in
+[`c2c_batch_compare_rowloop.csv`](results/c2c_batch_compare_rowloop.csv) and
+the focused RSS probe in
+[`rss_rowloop_complex128.csv`](results/rss_rowloop_complex128.csv).
+
+The row loop was not accepted as a NumPy heuristic. In the recorded run,
+`c222/rowloop` was `1.066` median / `1.083` geometric mean over all 448 c2c
+cases, but only `1.016` / `1.085` in the large focus. The large-focus
+`ifft(complex64)` result was `0.732` / `0.781` versus c222, and the row loop
+added roughly `0.25--0.60 MiB` of peak RSS in the focused complex128 probe.
+This is the reason the proposal keeps the batch decision inside DUCC rather
+than adding a permanent NumPy-only condition.
+
 ## Design B: explicit internal DUCC policy
 
 ### Proposed change
@@ -208,3 +229,18 @@ commands, stage paths, and raw artifact names are in
 The current shipped NumPy changes therefore remain the production choice. The
 DUCC-side solution is preserved as a local patch/proposal with raw results,
 not silently folded into a NumPy-only heuristic.
+
+## Related CPU-dispatch feasibility check
+
+An isolated NumPy prototype in `/home/albert/numpy-cpudispatch` also tested
+whether only the c2c wrapper entry points could use NumPy's runtime CPU
+dispatcher. It passed V2/V3 builds, ELF symbol checks,
+`NPY_DISABLE_CPU_FEATURES` fallback, the full 2,034-case correctness matrix,
+and 172/172 FFT tests. It was not a DUCC-side change and did not improve the
+decision: the repeat large focus measured `current/dispatch_v3 = 0.954`
+median / `0.965` geometric mean. Raw results are
+[`c2c_batch_compare_cpudispatch.csv`](results/c2c_batch_compare_cpudispatch.csv),
+[`c2c_batch_compare_cpudispatch_focus.csv`](results/c2c_batch_compare_cpudispatch_focus.csv),
+and [`rss_cpudispatch_complex128.csv`](results/rss_cpudispatch_complex128.csv).
+It remains a local feasibility record, not part of the shipped NumPy source
+or the proposed DUCC patch.

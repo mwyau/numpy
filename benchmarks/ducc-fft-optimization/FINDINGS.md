@@ -162,24 +162,51 @@ than hidden.
 
 ### Ordinary contiguous batches
 
-The critical experiment compared DUCC's generalized contiguous batch path with
-a local `pocketfft_c<T>` plan plus a row loop. Two complete c2c variants were
-measured: one allowing DUCC's vectorized low-level execution and one forcing
-scalar low-level execution. Neither produced a stable universal winner:
-
-* The vectorized row-loop candidate was approximately parity with c222 in the
-  aggregate but was slower in several batched clusters.
-* The scalar row-loop candidate was often 5--20% faster than c222 for large
-  complex128 batches, but had reproducible severe regressions for
-  `ifft(complex64, n=4097, batch=4..256)` of roughly 2.4--2.5x versus c222.
-* The row loop also did not recover the former pocketfft performance broadly;
-  it remained slower for many large cases and added a dtype/layout decision.
-
-The full raw experiments are
+The first local-plan experiments are retained in
 [`c2c_batch_compare.csv`](results/c2c_batch_compare.csv),
 [`c2c_batch_compare_novec.csv`](results/c2c_batch_compare_novec.csv), and
-[`c2c_batch_compare_final.csv`](results/c2c_batch_compare_final.csv). The
-rejected designs are summarized in
+[`c2c_batch_compare_final.csv`](results/c2c_batch_compare_final.csv). They
+were staged/local-plan controls, not a clean ordinary-direct row-loop
+comparison, so they should not be read as evidence for a direct contiguous
+batch policy. The scalar control did expose a useful failure mode:
+`ifft(complex64, n=4097, batch=4..256)` regressed by roughly 2.4--2.5x versus
+c222.
+
+A fresh direct-only candidate was then built from the current production
+commit in `/home/albert/numpy-rowloop`. Before `run_direct()`, it recognizes
+only ordinary contiguous batches (`n_outer > 1`, no factor stride, equal
+input/output length, and unit element strides), constructs one local
+`pocketfft_c<T>` plan, and loops over rows. It leaves the true 1-D single
+transform, generalized fallback, real transforms, and overlap handling
+unchanged. The exact source patch is
+[`ducc-direct-rowloop.patch`](experimental_patches/ducc-direct-rowloop.patch),
+and the full raw run is
+[`c2c_batch_compare_rowloop.csv`](results/c2c_batch_compare_rowloop.csv)
+(1,792 successful rows).
+
+Ratios below are previous/candidate, so values over one favor the row loop:
+
+| comparison | all 448 median / gmean | large focus median / gmean |
+|---|---:|---:|
+| c222 / direct row loop | 1.066 / 1.083 | 1.016 / 1.085 |
+| current final / direct row loop | 0.997 / 0.937 | 0.871 / 0.839 |
+| old pocketfft / direct row loop | 0.868 / 0.885 | 0.528 / 0.599 |
+
+The aggregate is not a portable win: in the large focus, row-loop
+`fft(complex64)` was `1.762`/`1.783` versus c222 by median/geometric mean,
+while `ifft(complex64)` was `0.732`/`0.781`. Complex128 was mixed (`fft`:
+`1.065`/`1.065`; `ifft`: `0.941`/`0.936`). The worst c64 regressions were
+the awkward-length inverse cases, including the known `n=4097` cluster.
+The focused RSS run is
+[`rss_rowloop_complex128.csv`](results/rss_rowloop_complex128.csv): the row
+loop added `+252`, `+596`, `+308`, and `+312 KiB` at batches 8, 32, 64, and
+256, respectively, with no stable speed benefit in that probe.
+
+This clean control confirms that a direct local-plan row loop can help some
+complex128 batches, but it also creates stable complex64 regressions and does
+not recover the parent pocketfft behavior. It is rejected as a generalized
+policy. The DUCC-side heuristic/policy experiments below are the upstreamable
+alternatives; the rejected designs are summarized in
 [`experimental_patches/README.md`](experimental_patches/README.md).
 
 The final direct-batch result is therefore the simpler generalized DUCC path.
@@ -338,21 +365,44 @@ from V3 as well, so the result is not a DUCC-only comparison.
 
 The final patch does not add runtime NumPy CPU dispatch. The extension module
 contains module initialization, gufunc registration, exception translation,
-and computational templates in one translation unit. Converting it to
-`mod_features.multi_targets()` would require a separate dispatch library and
-target-specific entry points. Standalone V2/V3 DUCC objects were inspected
-with `nm -C --defined-only` and `readelf -Ws`: the DUCC header instantiations
-observed in the shared objects are local (`t`) symbols, with no global/weak
-`ducc0::` definitions. That is reassuring for separate objects but is not a
-cross-compiler proof for a new multi-target link topology. A baseline-only
-V3 extension also remains V3 code when `NPY_DISABLE_CPU_FEATURES=AVX2` is set;
-the environment variable cannot make an extension compiled with V3 instructions
-baseline-safe.
+and computational templates in one translation unit. Standalone V2/V3 DUCC
+objects were inspected with `nm -C --defined-only` and `readelf -Ws`: the DUCC
+header instantiations observed in the shared objects are local (`t`) symbols,
+with no global/weak `ducc0::` definitions.
 
-Given the need for a small portable production diff, the measured V3 option
-is recorded as a follow-up rather than shipping an unproven multi-target
-split. The current final implementation is safe for the default baseline and
-does not rely on runtime feature branches in every transform call.
+To test the remaining dispatch question rather than infer it from symbols, an
+isolated prototype in `/home/albert/numpy-cpudispatch` split only the two c2c
+loop entry points through `mod_features.multi_targets()`. It built a V2
+baseline and a V2-plus-V3-dispatch extension, linked its own CPU-feature
+runtime, and selected the function pointers once at module initialization.
+The full raw run is
+[`c2c_batch_compare_cpudispatch.csv`](results/c2c_batch_compare_cpudispatch.csv)
+(448 cases per candidate); the repeat large-focus run is
+[`c2c_batch_compare_cpudispatch_focus.csv`](results/c2c_batch_compare_cpudispatch_focus.csv).
+Ratios are previous/candidate:
+
+| comparison | all 448 median / gmean | repeat large focus median / gmean |
+|---|---:|---:|
+| current / dispatch V2 | 1.002 / 1.009 | 0.998 / 0.997 |
+| current / dispatch V3 | 0.995 / 0.986 | 0.954 / 0.965 |
+| dispatch V2 / dispatch V3 | 0.990 / 0.978 | 0.966 / 0.968 |
+
+The prototype therefore establishes a working link/runtime topology but not a
+positive performance case: the V3 target was slower in the repeat focus, and
+the result is not a fix for the contiguous-batch regression. Its focused RSS
+probe is [`rss_cpudispatch_complex128.csv`](results/rss_cpudispatch_complex128.csv);
+relative to current final, the V3 deltas were `+44`, `+296`, `+464`, and
+`+748 KiB` at batches 8, 32, 64, and 256. The V2 deltas were `+60`, `+1,364`,
+`+192`, and `+584 KiB`. The dispatch V3 full correctness matrix has 2,034/2,034
+successful rows, and both dispatch stages pass 172/172 FFT tests. A V3
+dispatch build with `NPY_DISABLE_CPU_FEATURES=AVX2` correctly falls back to
+the X86_V2 baseline; this differs from a baseline-only V3 build, which remains
+unsafe to run on a CPU without its compiled V3 features.
+
+Given the need for a small portable production diff and the negative dispatch
+timing result, the prototype is retained as evidence only. The current final
+implementation remains the shipped baseline build and does not rely on runtime
+feature branches in every transform call.
 
 ## Experiment log
 
@@ -391,21 +441,26 @@ were measured separately and intentionally not routed through this path.
 
 ### Phase 5: contiguous-batch alternatives
 
-The direct row-loop variants were built and benchmarked across the requested
-c2c grid. The vectorized low-level variant did not improve the central result;
-the scalar low-level variant helped some large complex128 cases but regressed
-the awkward-length complex64 inverse cluster. Since no stable crossover was
-found without adding several conditions, both direct row-loop variants were
-rejected. Their source patches remain described, not included in production.
+The initial staged/local-plan variants were retained as controls, but were not
+ordinary-direct row-loop tests. A fresh direct-only row-loop patch was built
+from the current production commit and benchmarked across the requested c2c
+grid. It helped some large complex128 forward cases, but regressed
+complex64 inverse cases and remained behind the parent pocketfft path. Its
+1,792-row raw result and focused RSS run are retained as
+[`c2c_batch_compare_rowloop.csv`](results/c2c_batch_compare_rowloop.csv) and
+[`rss_rowloop_complex128.csv`](results/rss_rowloop_complex128.csv). No stable
+crossover was found without adding several dtype/operation conditions, so the
+direct row loop was rejected.
 
 ### Phase 6/7: ISA and dispatch
 
 Equivalent V2/V3 baseline-only builds were created for both parent and final.
 DUCC vector widths, target compiler flags, symbol tables, and runtime feature
-control behavior were inspected. V3 materially helps the final extension, but
-shipping it through NumPy's runtime dispatcher requires a clean split of the
-module and target-specific computation plus broader portability validation. No
-dispatch code was added based on standalone shared-object evidence alone.
+control behavior were inspected. V3 materially helps the final extension in a
+baseline-only build. An actual isolated NumPy multi-target prototype was then
+compiled and run; it passed link, fallback, symbol, correctness, and FFT-test
+checks, but its repeated large-focus timing was neutral-to-negative versus
+the shipped stage. No dispatch code was added to production.
 
 ### Phase 8: real operations
 
@@ -510,10 +565,11 @@ the relative errors remain well below the applied bound.
 * [`DIAGNOSTICS.md`](DIAGNOSTICS.md) — temporary DUCC path evidence; no
   diagnostic logging remains in production source.
 * [`results/`](results/) — raw CSVs, including pre-final candidates, matched
-  V2/V3 builds, DUCC policy comparisons/RSS, typed-factor comparisons, and
-  correctness passes.
+  V2/V3 builds, DUCC policy comparisons/RSS, direct row-loop and CPU-dispatch
+  prototypes, typed-factor comparisons, and correctness passes.
 * [`experimental_patches/`](experimental_patches/) — the local DUCC patches;
-  neither is vendored in the current NumPy commit.
+  neither is vendored in the current NumPy commit. The direct row-loop patch
+  is also retained as a rejected control.
 * [`experimental_patches/README.md`](experimental_patches/README.md) — why
   rejected row-loop, cache, and dispatch alternatives were not included.
 
@@ -523,8 +579,9 @@ the relative errors remain well below the applied bound.
    this DUCC migration. The final wrapper does not worsen c222's generalized
    path and avoids a non-universal direct row-loop heuristic. A future DUCC
    algorithm or portable batch implementation should target this explicitly.
-2. V3 materially improves DUCC, but a production NumPy multi-target split
-   needs a separate cross-platform implementation and linker/runtime proof.
+2. A baseline-only V3 build materially improves DUCC, but the isolated
+   multi-target prototype did not reproduce that gain and adds build/link
+   complexity. It is not part of the production diff.
 3. A thread-safe global or thread-local plan cache is not justified by this
    task and would require separate fork, memory, and concurrency validation.
 4. The DUCC-side batch-policy proposal needs upstream review and non-Ryzen

@@ -1,0 +1,29 @@
+diff --git a/numpy/fft/_duccfft_umath.cpp b/numpy/fft/_duccfft_umath.cpp
+index 034900dcf9..7f249f012b 100644
+--- a/numpy/fft/_duccfft_umath.cpp
++++ b/numpy/fft/_duccfft_umath.cpp
+@@ -342,6 +342,21 @@ fft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
+         ducc0::c2c(in, out, axes, forward, fct, 1);
+     };
+ 
++    // Experimental comparison point: use one reusable low-level plan for
++    // ordinary contiguous batches, while leaving single transforms on the
++    // true one-dimensional DUCC path below.
++    bool ordinary_contiguous_batch =
++        n_outer > 1 && sf == 0 && nin >= nout &&
++        si == static_cast<npy_intp>(nout * sizeof(complex_t)) &&
++        so == static_cast<npy_intp>(nout * sizeof(complex_t)) &&
++        step_in == static_cast<npy_intp>(sizeof(complex_t)) &&
++        step_out == static_cast<npy_intp>(sizeof(complex_t));
++    if (ordinary_contiguous_batch &&
++        run_local_c2c<T>(ip, fp, op, n_outer, nin, nout, nout,
++                         si, sf, so, step_in, step_out, forward)) {
++        return;
++    }
++
+     if (sf == 0 && nin >= nout &&
+         run_direct<complex_t, complex_t, T>(
+             ip, fp, op, n_outer, nout, nout,
+             si, so, step_in, step_out, true, true, transform)) {
+         return;
+     }
