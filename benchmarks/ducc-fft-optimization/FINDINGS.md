@@ -53,6 +53,9 @@ large single-sample cases can have noisy extrema, so medians, geometric means,
 and repeated focused cases carry more weight than isolated minimum/maximum
 ratios.
 
+The option-3 DUCC-side follow-up is a separate local proposal. It does not
+change the production conclusion or the source in this commit.
+
 ## Scope and invariants
 
 * Required starting commit: `c222665be45cbd361f2b0e96f6ff81f12b390ebd`,
@@ -182,6 +185,81 @@ rejected designs are summarized in
 The final direct-batch result is therefore the simpler generalized DUCC path.
 The new local plan is limited to staged/fallback rows, where its benefit is
 clear and it does not require a speculative crossover rule.
+
+### Phase 10: DUCC-side automatic and explicit batch policies
+
+The generalized-batch question was revisited in a separate worktree rooted at
+the preserved production commit, with the vendored DUCC tree at
+`64f42ba531f609ba7029c82207a063b17f9d5275`. The experiment stayed inside the
+existing one-dimensional NumPy c2c wrapper; `_ducc_nd_umath`, native N-D
+dispatch, and all N-D work remained untouched.
+
+Two upstreamable designs were tested:
+
+* The automatic DUCC candidate adds an internal policy abstraction and, only
+  for contiguous c2c double batches with compiled SIMD width at most two,
+  selects `n_simul=n_bunch=vlen` after the existing working-set heuristic.
+* The explicit candidate adds a named internal
+  `batch_policy::vectorize_contiguous` entry point. The temporary adapter
+  calls it only for batched complex128 c2c; it exposes no raw `n_simul` or
+  policy argument to Python.
+
+The focused automatic comparison uses `default / automatic` ratios, where
+values above one mean the candidate is faster:
+
+| build / dtype | cases | median | geometric mean |
+|---|---:|---:|---:|
+| V2 / complex64 | 32 | 1.004 | 1.005 |
+| V2 / complex128 | 32 | 1.668 | 1.515 |
+| V3 / complex64 | 32 | 0.999 | 0.999 |
+| V3 / complex128 | 32 | 0.999 | 1.006 |
+
+This is materially better than forcing vectorization for every dtype/ISA:
+the V2 complex128 cluster improves, while complex64 remains at parity and
+V3 does not pay the forced-vectorization cost. In the same-build public API
+control, automatic/explicit ratios for unaffected c2c complex64 rows were
+`1.012 / 1.011` on V2 and `1.001 / 1.000` on V3 by median/geometric mean.
+The real-transform rows were `0.997 / 1.002` and `1.002 / 1.004`, respectively.
+These are neutral noise bands; neither candidate changes the real-transform
+source path.
+
+The exact scoped explicit-policy run is
+[`c2c_batch_compare_ducc_policy.csv`](results/c2c_batch_compare_ducc_policy.csv).
+It contains 1,792 successful rows over the full required c2c matrix and
+compares old pocketfft, c222, current final, and the DUCC policy candidate:
+
+| comparison | all 448 median / gmean | large focus median / gmean |
+|---|---:|---:|
+| c222 / current final | 1.033 / 1.148 | 1.033 / 1.288 |
+| current final / DUCC policy | 1.001 / 1.053 | 1.028 / 1.235 |
+| c222 / DUCC policy | 1.056 / 1.209 | 1.640 / 1.591 |
+| old pocketfft / DUCC policy | 0.807 / 0.883 | 0.786 / 0.901 |
+
+The large focus is `n >= 8192` with batches 8, 32, 64, and 256. The policy
+does not erase DUCC's remaining algorithm-level large complex128 gap to old
+pocketfft, but it improves the generalized DUCC path without a stable
+complex64 regression relative to current final.
+
+Peak-RSS measurements were taken in a fresh process for each case. At
+`fft(complex128, n=65536)`, explicit minus automatic RSS was approximately
+`+0.1--0.3 MiB` on V2 and `+5.7--7.2 MiB` on V3 across batches 8, 32, 64, and
+256. Complex64 deltas stayed within the measurement noise band. This makes
+the explicit policy a reasonable fallback hook but not a default choice for
+wider SIMD builds.
+
+The final scoped policy stage passed all 2,034 old-versus-candidate numerical
+cases and `numpy.fft.tests` passed `172/172` in both V2 and V3 builds. The
+builds retained `DUCC0_NO_FFT_CACHE` and `DUCC0_NO_LOWLEVEL_THREADING`, and
+all workers used one external thread plus DUCC `nthreads=1`.
+
+Decision: retain the current NumPy implementation and do not vendor the DUCC
+patch locally yet. The automatic rule is the preferred upstream proposal and
+the explicit internal enum is the fallback, but this evidence is still from
+one Ryzen host and two x86 ISA builds. DUCC-level cross-architecture,
+cache-size, memory, and caller-compatibility validation plus upstream review
+are required before changing the vendored 0.41.1 source. Full design detail,
+patches, commands, and raw results are in
+[`DUCC_PROPOSAL.md`](DUCC_PROPOSAL.md).
 
 ### Generalized blocking and the 8-KiB transition
 
@@ -425,10 +503,17 @@ the relative errors remain well below the applied bound.
   driver.
 * [`correctness_matrix.py`](correctness_matrix.py) — isolated old/final
   numerical comparison.
+* [`ducc_policy_rss.py`](ducc_policy_rss.py) — fresh-process timing/RSS probe
+  for the DUCC policy candidates.
+* [`DUCC_PROPOSAL.md`](DUCC_PROPOSAL.md) — upstreamable automatic and explicit
+  DUCC-side designs, decision, and validation gates.
 * [`DIAGNOSTICS.md`](DIAGNOSTICS.md) — temporary DUCC path evidence; no
   diagnostic logging remains in production source.
 * [`results/`](results/) — raw CSVs, including pre-final candidates, matched
-  V2/V3 builds, typed-factor comparisons, and the final correctness pass.
+  V2/V3 builds, DUCC policy comparisons/RSS, typed-factor comparisons, and
+  correctness passes.
+* [`experimental_patches/`](experimental_patches/) — the local DUCC patches;
+  neither is vendored in the current NumPy commit.
 * [`experimental_patches/README.md`](experimental_patches/README.md) — why
   rejected row-loop, cache, and dispatch alternatives were not included.
 
@@ -442,6 +527,8 @@ the relative errors remain well below the applied bound.
    needs a separate cross-platform implementation and linker/runtime proof.
 3. A thread-safe global or thread-local plan cache is not justified by this
    task and would require separate fork, memory, and concurrency validation.
+4. The DUCC-side batch-policy proposal needs upstream review and non-Ryzen
+   validation before it can replace the current vendored DUCC source.
 
 No other unresolved issue is being hidden as a benchmark exception. The
 production diff contains only the selected one-dimensional paths and the

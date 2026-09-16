@@ -33,7 +33,7 @@ multi-axis FFT source or benchmark is part of this work.
 | C/C++ compiler | GCC 15.2.0 |
 | linker | GNU ld 2.46 |
 | BLAS | OpenBLAS 0.3.32 |
-| NumPy build version | `2.6.0.dev0+git20260913.c222665` |
+| NumPy build version | `2.6.0.dev0+git20260915.5787f7e` |
 | Meson | vendored 1.11.1 (`vendored-meson/meson/meson.py`) |
 | Ninja | 1.13.2 |
 
@@ -91,10 +91,35 @@ recorded.
 | `old` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-old/usr/local/lib/python3.14/site-packages` |
 | `c222` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-ducc/usr/local/lib/python3.14/site-packages` |
 | `final` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-staged/usr/lib/python3.14/site-packages` |
+| `current_final` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-candidate-fct/usr/lib/python3.14/site-packages` |
 | `old_v2` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-old-v2/usr/local/lib/python3.14/site-packages` |
 | `final_v2` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-final-v2/usr/lib/python3.14/site-packages` |
 | `old_v3` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-old-v3/usr/local/lib/python3.14/site-packages` |
 | `final_v3` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-final-v3/usr/lib/python3.14/site-packages` |
 
-The final, V2, and V3 DUCC stages contain the typed-factor Python wrapper.
-Pre-final stages are retained only as labeled exploratory results.
+The `current_final`, V2, and V3 final stages contain the typed-factor Python
+wrapper. `final` is the retained staged-only pre-factor comparison; it is
+kept for historical raw results and is not the current production candidate.
+
+## DUCC-side experiment stages
+
+The separate experiment worktree was `/home/albert/numpy-force-nsimul`,
+detached at the preserved NumPy production commit `5787f7e27f370a50278401807adaec56752608cc`.
+Its vendored DUCC source is the exact 0.41.1 tree at
+`64f42ba531f609ba7029c82207a063b17f9d5275`, as recorded by
+`tools/vendoring/vendor_duccfft.sh`.
+
+| label | staged site-packages | build policy |
+|---|---|---|
+| `auto_v2` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-auto-v2/usr/local/lib/python3.14/site-packages` | automatic heuristic, `min` resolving to X86_V2 |
+| `auto_v3` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-auto-v3/usr/local/lib/python3.14/site-packages` | automatic heuristic, X86_V3 baseline |
+| `policy_v2` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-force-api/usr/local/lib/python3.14/site-packages` | explicit internal policy, X86_V2-resolved build |
+| `policy_v3` | `/home/albert/numpy-fft-ducc-benchmark-20260914/stage-force-api-v3/usr/local/lib/python3.14/site-packages` | explicit internal policy, X86_V3 baseline |
+
+The automatic experiment changes only the DUCC-side c2c heuristic for
+contiguous no-stride double batches when the compiled SIMD width is at most
+two lanes. The explicit experiment adds a named internal
+`batch_policy::vectorize_contiguous` entry point and the temporary NumPy
+adapter calls it only for batched complex128 c2c. Neither experiment changes
+`_ducc_nd_umath`, native N-D dispatch, or any N-D benchmark. The experiment
+builds retain `DUCC0_NO_FFT_CACHE` and `DUCC0_NO_LOWLEVEL_THREADING`.

@@ -58,6 +58,30 @@ the public double path. The hypothesized 4096/512-KiB causal threshold is
 therefore disproved. No vendored DUCC heuristic or host-specific cache-size
 constant was changed.
 
+## DUCC-side contiguous-batch proposals — local only
+
+The follow-up option-3 experiment is recorded in
+[`DUCC_PROPOSAL.md`](../DUCC_PROPOSAL.md). It has two patch files:
+
+* [`ducc-auto-heuristic.patch`](ducc-auto-heuristic.patch) adds an internal
+  `batch_policy` abstraction and makes the automatic policy use
+  `n_simul=n_bunch=vlen` only for contiguous c2c double batches when
+  `vlen<=2`.
+* [`ducc-explicit-batch-policy.patch`](ducc-explicit-batch-policy.patch) adds
+  the same DUCC-side policy plus a temporary adapter call to the named
+  `batch_policy::vectorize_contiguous` entry point for batched complex128
+  c2c. It does not expose `n_simul` or any policy parameter through Python.
+
+The automatic candidate improved the large V2 complex128 c2c focus by about
+1.5x geometric mean while leaving V2/V3 complex64 near parity and leaving
+real transforms on their existing paths. The explicit policy had no stable
+complex64 or real regression after compile-time dtype scoping, but its V3
+complex128 policy path added roughly 5.7--7.2 MiB peak RSS at `n=65536`.
+Neither proposal was vendored into the production NumPy commit: the evidence
+is from one Ryzen host and two x86 ISA builds, and the automatic default
+change still needs DUCC-level cross-architecture/cache-size validation and
+upstream review.
+
 ## NumPy V2/V3 dispatch — measured, not shipped
 
 Fresh baseline-only builds show a broad V3 benefit for the corrected DUCC
