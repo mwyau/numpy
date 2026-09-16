@@ -172,11 +172,61 @@ element_stride(npy_intp byte_stride)
         byte_stride / static_cast<npy_intp>(sizeof(T)));
 }
 
+/* Execute independent c2c rows with one local DUCC plan.  This path is for
+ * staged layouts that cannot use DUCC's generalized direct view.  Keeping
+ * the plan local preserves the cache-off and single-threaded policy while
+ * avoiding one plan construction per row.
+ */
+template <typename T>
+static bool
+run_local_c2c(char *ip, char *fp, char *op, size_t n_outer,
+              size_t nin_available, size_t nin, size_t nout,
+              npy_intp si, npy_intp sf, npy_intp so,
+              npy_intp step_in, npy_intp step_out, bool forward)
+{
+    using complex_t = ducc0::Cmplx<T>;
+
+    // A row loop cannot preserve NumPy's snapshot semantics for overlapping
+    // views (including zero-stride rows); leave those cases on run_staged().
+    if (may_overlap<complex_t, complex_t>(
+            ip, op, n_outer, nin_available < nin ? nin_available : nin,
+            nout, si, step_in, so, step_out)) {
+        return false;
+    }
+
+    size_t n_input = nin_available < nin ? nin_available : nin;
+    ducc0::pocketfft_c<T> plan(nout, false);
+    ducc0::aligned_array<complex_t> scratch(plan.bufsize());
+
+    const bool output_is_contiguous =
+        step_out == static_cast<npy_intp>(sizeof(complex_t)) &&
+        can_use_direct_view<complex_t>(op, so, step_out);
+    ducc0::aligned_array<complex_t> buffer(output_is_contiguous ? 0 : nout);
+
+    for (size_t i = 0; i < n_outer; ++i,
+            ip += si, fp += sf, op += so) {
+        if (output_is_contiguous) {
+            auto *work = reinterpret_cast<complex_t *>(op);
+            copy_input(ip, step_in, n_input, work, nout);
+            plan.exec_copyback(work, scratch.data(),
+                               load_unaligned<T>(fp), forward, 1);
+        }
+        else {
+            copy_input(ip, step_in, n_input, buffer.data(), nout);
+            auto *result = plan.exec(buffer.data(), scratch.data(),
+                                     load_unaligned<T>(fp), forward, 1);
+            copy_output(result, op, step_out, nout);
+        }
+    }
+    return true;
+}
+
 template <typename Tin, typename Tout, typename Scale, typename Transform>
 static bool
 run_direct(char *ip, char *fp, char *op, size_t n_outer,
            size_t nin, size_t nout, npy_intp si, npy_intp so,
            npy_intp step_in, npy_intp step_out, bool allow_inplace,
+           bool use_one_dimensional,
            Transform&& transform)
 {
     // DUCC can consume NumPy's strided storage directly when the byte strides
@@ -196,13 +246,20 @@ run_direct(char *ip, char *fp, char *op, size_t n_outer,
         return false;
     }
 
-    ducc_shape_t shape_in{n_outer, nin};
-    ducc_shape_t shape_out{n_outer, nout};
+    bool one_dimensional = use_one_dimensional && n_outer == 1;
+    ducc_shape_t shape_in = one_dimensional
+        ? ducc_shape_t{nin} : ducc_shape_t{n_outer, nin};
+    ducc_shape_t shape_out = one_dimensional
+        ? ducc_shape_t{nout} : ducc_shape_t{n_outer, nout};
     ducc_stride_t strides_in{
         element_stride<Tin>(si), element_stride<Tin>(step_in)};
     ducc_stride_t strides_out{
         element_stride<Tout>(so), element_stride<Tout>(step_out)};
-    ducc_shape_t axes{1};
+    if (one_dimensional) {
+        strides_in = ducc_stride_t{element_stride<Tin>(step_in)};
+        strides_out = ducc_stride_t{element_stride<Tout>(step_out)};
+    }
+    ducc_shape_t axes = one_dimensional ? ducc_shape_t{0} : ducc_shape_t{1};
 
     auto in = ducc0::cfmav<Tin>(
         reinterpret_cast<const Tin *>(ip), shape_in, strides_in);
@@ -288,7 +345,12 @@ fft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
     if (sf == 0 && nin >= nout &&
         run_direct<complex_t, complex_t, T>(
             ip, fp, op, n_outer, nout, nout,
-            si, so, step_in, step_out, true, transform)) {
+            si, so, step_in, step_out, true, true, transform)) {
+        return;
+    }
+
+    if (run_local_c2c<T>(ip, fp, op, n_outer, nin, nout, nout,
+                         si, sf, so, step_in, step_out, forward)) {
         return;
     }
 
@@ -324,7 +386,7 @@ rfft_impl(char **args, npy_intp const *dimensions, npy_intp const *steps,
     if (sf == 0 && nin >= npts &&
         run_direct<T, complex_t, T>(
             ip, fp, op, n_outer, npts, nout,
-            si, so, step_in, step_out, false, transform)) {
+            si, so, step_in, step_out, false, false, transform)) {
         return;
     }
 
@@ -381,7 +443,7 @@ irfft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
     if (sf == 0 && nin >= npts_in &&
         run_direct<complex_t, T, T>(
             ip, fp, op, n_outer, npts_in, nout,
-            si, so, step_in, step_out, false, transform)) {
+            si, so, step_in, step_out, false, false, transform)) {
         return;
     }
 

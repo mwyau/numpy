@@ -66,7 +66,9 @@ def _raw_fft(a, n, axis, is_real, is_forward, norm, out=None):
 
     real_dtype = result_type(a.real.dtype, 1.0)
     if norm is None or norm == "backward":
-        fct = 1
+        # Keep the exact-one factor in the input precision so the gufunc
+        # resolver selects the matching DUCC loop for float32/complex64.
+        fct = a.real.dtype.type(1)
     elif norm == "ortho":
         fct = reciprocal(sqrt(n, dtype=real_dtype))
     elif norm == "forward":
