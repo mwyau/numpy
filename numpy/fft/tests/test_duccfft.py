@@ -266,6 +266,18 @@ class TestFFT1D:
         assert result is out
         assert_allclose(result, expected)
 
+    def test_fft_overlapping_outer_rows(self):
+        n = 8
+        storage = np.arange(3 * n, dtype=np.complex128).reshape(3, n)
+        x = storage[:2]
+        out = storage[1:]
+        expected = np.fft.fft(x.copy(), axis=-1)
+        result = np.fft.fft(x, axis=-1, out=out)
+
+        assert np.shares_memory(x, out)
+        assert result is out
+        assert_allclose(result, expected)
+
     @pytest.mark.parametrize(
         "function, input_dtype, input_size, output_shape, output_dtype", [
         (np.fft.fft, np.complex64, 8, (0, 8), np.complex64),
