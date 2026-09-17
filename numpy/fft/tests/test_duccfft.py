@@ -1,11 +1,54 @@
+import os
 import queue
+import sys
 import threading
 
 import pytest
 
 import numpy as np
+from numpy._core._multiarray_umath import __cpu_dispatch__, __cpu_features__
 from numpy.random import random
-from numpy.testing import IS_WASM, assert_allclose, assert_array_equal, assert_raises
+from numpy.testing import (
+    HAS_SUBPROCESSES,
+    IS_WASM,
+    assert_allclose,
+    assert_array_equal,
+    assert_raises,
+)
+from numpy.testing._private.utils import run_subprocess
+
+
+@pytest.mark.skipif(
+    not HAS_SUBPROCESSES,
+    reason="platform cannot start subprocesses",
+)
+def test_fft_forced_cpu_dispatch():
+    targets = ("X86_V4", "X86_V3", "X86_V2")
+    target = next(
+        (name for name in targets
+         if name in __cpu_dispatch__ and __cpu_features__.get(name)),
+        None,
+    )
+    if target is None:
+        pytest.skip("no available DUCC FFT dispatch target")
+
+    env = os.environ.copy()
+    env.pop("NPY_DISABLE_CPU_FEATURES", None)
+    env["NPY_ENABLE_CPU_FEATURES"] = target
+    run_subprocess(
+        [
+            sys.executable,
+            "-c",
+            """
+import numpy as np
+
+x = np.array([1., 2., 3., 4.])
+expected = np.array([10., -2. + 2.j, -2., -2. - 2.j])
+np.testing.assert_allclose(np.fft.fft(x), expected)
+""",
+        ],
+        env=env,
+    )
 
 
 def fft1(x):

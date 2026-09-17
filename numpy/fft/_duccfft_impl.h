@@ -20,6 +20,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <type_traits>
 #include <vector>
 
 #include "numpy/ndarraytypes.h"
@@ -30,6 +31,25 @@ namespace duccfft_impl {
 
 using ducc_shape_t = ducc0::fmav_info::shape_t;
 using ducc_stride_t = ducc0::fmav_info::stride_t;
+
+/* DUCC reinterprets NumPy's std::complex storage as Cmplx<T>. */
+template <typename T>
+static inline void
+check_complex_representation()
+{
+    static_assert(
+        sizeof(ducc0::Cmplx<T>) == sizeof(std::complex<T>),
+        "DUCC and NumPy complex values must have the same size");
+    static_assert(
+        alignof(ducc0::Cmplx<T>) == alignof(std::complex<T>),
+        "DUCC and NumPy complex values must have the same alignment");
+    static_assert(
+        std::is_trivially_copyable_v<ducc0::Cmplx<T>>,
+        "DUCC complex values must be trivially copyable");
+    static_assert(
+        std::is_trivially_copyable_v<std::complex<T>>,
+        "NumPy complex values must be trivially copyable");
+}
 
 template <typename T>
 static inline T
@@ -166,6 +186,7 @@ run_local_c2c(char *ip, char *fp, char *op, size_t n_outer,
               npy_intp step_in, npy_intp step_out, bool forward)
 {
     using complex_t = ducc0::Cmplx<T>;
+    check_complex_representation<T>();
 
     // A row loop cannot preserve NumPy's snapshot semantics for overlapping
     // views (including zero-stride rows); leave those cases on run_staged().
@@ -210,6 +231,7 @@ run_direct(char *ip, char *fp, char *op, size_t n_outer,
            bool use_one_dimensional,
            Transform&& transform)
 {
+    check_complex_representation<Scale>();
     // DUCC can consume NumPy's strided storage directly when the byte strides
     // are element strides, the data is aligned, and the views are compatible.
     if (!can_use_direct_view<Tin>(ip, si, step_in) ||
@@ -257,6 +279,7 @@ run_staged(char *ip, char *fp, char *op, size_t n_outer,
            npy_intp si, npy_intp sf, npy_intp so,
            npy_intp step_in, npy_intp step_out, Transform&& transform)
 {
+    check_complex_representation<Scale>();
     size_t n_input = nin_available < nin ? nin_available : nin;
     // Preserve all input transforms before writing an overlapping output.
     bool overlap = may_overlap<Tin, Tout>(
