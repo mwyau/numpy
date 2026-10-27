@@ -45,7 +45,7 @@ from numpy._core import (
 )
 from numpy.lib.array_utils import normalize_axis_index
 
-from . import _pocketfft_umath as pfu
+from . import _duccfft_umath as duccfft
 
 array_function_dispatch = functools.partial(
     overrides.array_function_dispatch, module='numpy.fft')
@@ -66,7 +66,9 @@ def _raw_fft(a, n, axis, is_real, is_forward, norm, out=None):
 
     real_dtype = result_type(a.real.dtype, 1.0)
     if norm is None or norm == "backward":
-        fct = 1
+        # Keep the exact-one factor in the input precision so the gufunc
+        # resolver selects the matching DUCC loop for float32/complex64.
+        fct = a.real.dtype.type(1)
     elif norm == "ortho":
         fct = reciprocal(sqrt(n, dtype=real_dtype))
     elif norm == "forward":
@@ -78,12 +80,13 @@ def _raw_fft(a, n, axis, is_real, is_forward, norm, out=None):
     n_out = n
     if is_real:
         if is_forward:
-            ufunc = pfu.rfft_n_even if n % 2 == 0 else pfu.rfft_n_odd
+            ufunc = (duccfft.rfft_n_even if n % 2 == 0
+                     else duccfft.rfft_n_odd)
             n_out = n // 2 + 1
         else:
-            ufunc = pfu.irfft
+            ufunc = duccfft.irfft
     else:
-        ufunc = pfu.fft if is_forward else pfu.ifft
+        ufunc = duccfft.fft if is_forward else duccfft.ifft
 
     axis = normalize_axis_index(axis, a.ndim)
 
