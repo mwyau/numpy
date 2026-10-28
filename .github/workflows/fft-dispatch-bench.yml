@@ -1,0 +1,301 @@
+name: DUCC FFT cache-off native ND vs PocketFFT
+
+on:
+  push:
+    branches:
+      - test/fft-native-nd-cacheoff-ci
+  # The Run workflow UI requires this file on the default branch. GitHub also
+  # allows API/CLI dispatch to a non-default ref after the workflow has run once.
+  # This trigger is retained so that behavior can be tested without changing main.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fft-dispatch:
+    name: Compare cache-off native ND V2/V3/V4, legacy ND, and PocketFFT
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Record runner and compiler details
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-dispatch-diagnostics"
+          {
+            echo "## Runner"
+            lscpu | grep -E '^(Architecture|CPU op-mode|Vendor ID|Model name|Flags):'
+            echo
+            python -VV
+            gcc --version | head -n 1
+            g++ --version | head -n 1
+          } 2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/runner.log"
+
+      - name: Install NumPy build, test, and ASV dependencies
+        id: install
+        continue-on-error: true
+        run: |
+          python -m pip install --group dev-cli --group test-core --group bench \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/install.log"
+
+      - name: Build NumPy once with x86 dispatch targets
+        id: build
+        continue-on-error: true
+        run: |
+          spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min \
+            -Dcpu-dispatch=max \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/build.log"
+
+      - name: Report unmasked host and built DUCC dispatch targets
+        id: host
+        continue-on-error: true
+        run: |
+          spin python .github/scripts/fft_dispatch_bench.py host \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/host.log"
+
+      - name: Run DUCC FFT dispatch correctness tests
+        id: fft_tests
+        continue-on-error: true
+        run: |
+          spin test numpy/fft/tests/test_duccfft.py -- --timeout=600 \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/fft-tests.log"
+
+      - name: Run native ND, dispatcher, and full FFT correctness tests
+        id: native_tests
+        continue-on-error: true
+        run: |
+          spin test numpy/fft/tests/test_native_nd_experiment.py numpy/fft/tests/test_duccfft.py -- --timeout=600 \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/native-nd-tests.log"
+
+      - name: Initialize ASV machine metadata
+        id: asv_machine
+        continue-on-error: true
+        working-directory: benchmarks
+        env:
+          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          asv machine --yes --machine "$ASV_MACHINE_NAME" \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/asv-machine.log"
+
+      - name: Select common benchmark CPU
+        run: |
+          echo "FFT_BENCH_CPU=$(python -c 'import os; print(min(os.sched_getaffinity(0)))')" >> "$GITHUB_ENV"
+          command -v taskset
+
+      - name: Run X86_V2 profile
+        id: v2
+        continue-on-error: true
+        env:
+          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
+          NPY_DISABLE_CPU_FEATURES: X86_V4,X86_V3
+          DUCCFFT_ASV_EXPECTED_TARGET: baseline(X86_V2)
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-dispatch-x86_v2"
+          set +e
+          taskset -c "$FFT_BENCH_CPU" spin python .github/scripts/fft_dispatch_bench.py run X86_V2 \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-x86_v2/run.log"
+          status=${PIPESTATUS[0]}
+          echo "$status" > "$RUNNER_TEMP/fft-dispatch-x86_v2/exit-code.txt"
+          exit "$status"
+
+      - name: Run X86_V3 profile
+        id: v3
+        continue-on-error: true
+        env:
+          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
+          NPY_DISABLE_CPU_FEATURES: X86_V4
+          DUCCFFT_ASV_EXPECTED_TARGET: X86_V3
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-dispatch-x86_v3"
+          set +e
+          taskset -c "$FFT_BENCH_CPU" spin python .github/scripts/fft_dispatch_bench.py run X86_V3 \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-x86_v3/run.log"
+          status=${PIPESTATUS[0]}
+          echo "$status" > "$RUNNER_TEMP/fft-dispatch-x86_v3/exit-code.txt"
+          exit "$status"
+
+      - name: Run legacy multi-axis X86_V3 profile (cache off)
+        id: legacy_v3
+        continue-on-error: true
+        env:
+          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
+          NPY_DISABLE_CPU_FEATURES: X86_V4
+          DUCCFFT_ASV_EXPECTED_TARGET: X86_V3
+          NPY_DUCCFFT_NATIVE_ND: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-dispatch-legacy_v3"
+          set +e
+          taskset -c "$FFT_BENCH_CPU" spin python .github/scripts/fft_dispatch_bench.py run LEGACY_V3 \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-legacy_v3/run.log"
+          status=${PIPESTATUS[0]}
+          echo "$status" > "$RUNNER_TEMP/fft-dispatch-legacy_v3/exit-code.txt"
+          exit "$status"
+
+      - name: Run strict X86_V4 profile
+        id: v4
+        continue-on-error: true
+        env:
+          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
+          DUCCFFT_ASV_EXPECTED_TARGET: X86_V4
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-dispatch-x86_v4"
+          set +e
+          taskset -c "$FFT_BENCH_CPU" spin python .github/scripts/fft_dispatch_bench.py run X86_V4 \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-x86_v4/run.log"
+          status=${PIPESTATUS[0]}
+          echo "$status" > "$RUNNER_TEMP/fft-dispatch-x86_v4/exit-code.txt"
+          exit "$status"
+
+      - name: Checkout pinned PocketFFT reference (fork main)
+        id: pocket_checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mwyau/numpy
+          ref: b833c1b9bf6712cc8a03bb301b77c48984a2373d
+          path: pocketfft-reference
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install identical ASV benchmark in reference checkout
+        id: pocket_cases
+        continue-on-error: true
+        run: |
+          cp benchmarks/benchmarks/bench_fft.py pocketfft-reference/benchmarks/benchmarks/bench_fft.py
+          cmp benchmarks/benchmarks/bench_fft.py pocketfft-reference/benchmarks/benchmarks/bench_fft.py
+          git -C pocketfft-reference rev-parse HEAD
+
+      - name: Build PocketFFT NumPy main reference
+        id: pocket_build
+        continue-on-error: true
+        working-directory: pocketfft-reference
+        run: |
+          spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min \
+            -Dcpu-dispatch=max \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/pocketfft-build.log"
+
+      - name: Initialize PocketFFT ASV machine
+        id: pocket_machine
+        continue-on-error: true
+        working-directory: pocketfft-reference/benchmarks
+        env:
+          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          asv machine --yes --machine "$ASV_MACHINE_NAME" \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-diagnostics/pocketfft-machine.log"
+
+      - name: Run PocketFFT main-branch reference
+        id: pocketfft
+        continue-on-error: true
+        working-directory: pocketfft-reference
+        env:
+          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
+          FFT_BENCH_ROOT: ${{ github.workspace }}/pocketfft-reference
+          FFT_POCKETFFT_COMMIT: b833c1b9bf6712cc8a03bb301b77c48984a2373d
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-dispatch-pocketfft"
+          set +e
+          taskset -c "$FFT_BENCH_CPU" spin python ../.github/scripts/fft_dispatch_bench.py run POCKETFFT \
+            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-pocketfft/run.log"
+          status=${PIPESTATUS[0]}
+          echo "$status" > "$RUNNER_TEMP/fft-dispatch-pocketfft/exit-code.txt"
+          exit "$status"
+
+      - name: Summarize dispatch profiles
+        if: always()
+        id: summary
+        env:
+          BUILD_STEP_OUTCOME: ${{ steps.build.outcome }}
+          INSTALL_STEP_OUTCOME: ${{ steps.install.outcome }}
+          FFT_TEST_STEP_OUTCOME: ${{ steps.fft_tests.outcome }}
+          NATIVE_ND_TEST_STEP_OUTCOME: ${{ steps.native_tests.outcome }}
+          LEGACY_V3_STEP_OUTCOME: ${{ steps.legacy_v3.outcome }}
+          HOST_STEP_OUTCOME: ${{ steps.host.outcome }}
+          ASV_MACHINE_STEP_OUTCOME: ${{ steps.asv_machine.outcome }}
+          X86_V2_STEP_OUTCOME: ${{ steps.v2.outcome }}
+          X86_V3_STEP_OUTCOME: ${{ steps.v3.outcome }}
+          X86_V4_STEP_OUTCOME: ${{ steps.v4.outcome }}
+          POCKETFFT_STEP_OUTCOME: ${{ steps.pocketfft.outcome }}
+          POCKETFFT_CHECKOUT_OUTCOME: ${{ steps.pocket_checkout.outcome }}
+          POCKETFFT_CASES_OUTCOME: ${{ steps.pocket_cases.outcome }}
+          POCKETFFT_BUILD_OUTCOME: ${{ steps.pocket_build.outcome }}
+          POCKETFFT_MACHINE_OUTCOME: ${{ steps.pocket_machine.outcome }}
+        run: python .github/scripts/fft_dispatch_bench.py summary
+
+      - name: Upload V2 results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-dispatch-v2
+          path: ${{ runner.temp }}/fft-dispatch-x86_v2/
+          if-no-files-found: warn
+
+      - name: Upload V3 results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-dispatch-v3
+          path: ${{ runner.temp }}/fft-dispatch-x86_v3/
+          if-no-files-found: warn
+
+      - name: Upload legacy ND V3 reference measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-dispatch-legacy-v3
+          path: ${{ runner.temp }}/fft-dispatch-legacy_v3/
+          if-no-files-found: warn
+
+      - name: Upload V4 results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-dispatch-v4
+          path: ${{ runner.temp }}/fft-dispatch-x86_v4/
+          if-no-files-found: warn
+
+      - name: Upload PocketFFT reference measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-dispatch-pocketfft
+          path: ${{ runner.temp }}/fft-dispatch-pocketfft/
+          if-no-files-found: warn
+
+      - name: Upload common build and host diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-dispatch-diagnostics
+          path: ${{ runner.temp }}/fft-dispatch-diagnostics/
+          if-no-files-found: warn
+
+      - name: Upload Markdown performance report and timing table
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-dispatch-performance-report
+          path: |
+            ${{ runner.temp }}/fft-dispatch-diagnostics/FFT_DISPATCH_REPORT.md
+            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-dispatch-timings.tsv
+            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-dispatch-comparison.json
+            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-pocketfft-comparison.tsv
+            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-pocketfft-comparison.json
+            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-native-nd-comparison.tsv
+            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-native-nd-comparison.json
+          if-no-files-found: warn
