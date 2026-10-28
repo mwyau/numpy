@@ -13,7 +13,8 @@
             char **args, npy_intp const *dimensions,                     \
             npy_intp const *steps, void *func)                            \
     {                                                                      \
-        duccfft_impl::IMPLEMENTATION(args, dimensions, steps, func);       \
+        DUCC0_NAMESPACE::duccfft_impl::IMPLEMENTATION(                    \
+                args, dimensions, steps, func);                            \
     }
 
 DUCCFFT_DEFINE_ENTRY(duccfft_c2c_double, fft_loop<npy_double>)

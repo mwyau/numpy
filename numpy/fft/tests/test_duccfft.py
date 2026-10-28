@@ -6,7 +6,8 @@ import threading
 import pytest
 
 import numpy as np
-from numpy._core._multiarray_umath import __cpu_dispatch__, __cpu_features__
+from numpy._core._multiarray_umath import __cpu_features__
+from numpy.fft import _duccfft_umath
 from numpy.random import random
 from numpy.testing import (
     HAS_SUBPROCESSES,
@@ -18,33 +19,48 @@ from numpy.testing import (
 from numpy.testing._private.utils import run_subprocess
 
 
-@pytest.mark.skipif(
-    not HAS_SUBPROCESSES,
-    reason="platform cannot start subprocesses",
-)
-def test_fft_forced_cpu_dispatch():
-    targets = ("X86_V4", "X86_V3", "X86_V2")
-    target = next(
-        (name for name in targets
-         if name in __cpu_dispatch__ and __cpu_features__.get(name)),
-        None,
-    )
-    if target is None:
-        pytest.skip("no available DUCC FFT dispatch target")
+def _duccfft_dispatch_targets():
+    """Return compiled FFT targets from highest interest to baseline."""
+    return _duccfft_umath.__duccfft_cpu_dispatch_targets__.split()
 
-    env = os.environ.copy()
-    env.pop("NPY_DISABLE_CPU_FEATURES", None)
-    env["NPY_ENABLE_CPU_FEATURES"] = target
+
+def _dispatch_target_name(target):
+    return target.split("(", 1)[0]
+
+
+def _run_fft_dispatch_check(env, expected_target=None):
+    env.pop("DUCCFFT_EXPECTED_TARGET", None)
+    if expected_target is not None:
+        env["DUCCFFT_EXPECTED_TARGET"] = expected_target
     run_subprocess(
         [
             sys.executable,
             "-c",
             """
+import os
 import numpy as np
+from numpy.fft import _duccfft_umath
+from numpy._core._multiarray_umath import __cpu_features__
+
+available = _duccfft_umath.__duccfft_cpu_dispatch_targets__.split()
+selected = _duccfft_umath.__duccfft_cpu_dispatch_target__
+expected = os.environ.get("DUCCFFT_EXPECTED_TARGET")
+if expected is None:
+    expected = next(
+        target for target in available
+        if target.startswith("baseline(")
+        or __cpu_features__.get(target, False)
+    )
+assert selected == expected, (selected, expected, available)
+disabled = os.environ.get("DUCCFFT_DISABLED_TARGETS", "").split(",")
+for target in filter(None, disabled):
+    assert not __cpu_features__[target], (target, __cpu_features__[target])
 
 x = np.array([1., 2., 3., 4.])
-expected = np.array([10., -2. + 2.j, -2., -2. - 2.j])
-np.testing.assert_allclose(np.fft.fft(x), expected)
+expected_fft = np.array([10., -2. + 2.j, -2., -2. - 2.j])
+np.testing.assert_allclose(np.fft.fft(x), expected_fft)
+np.testing.assert_allclose(np.fft.ifft(expected_fft), x)
+np.testing.assert_allclose(np.fft.irfft(np.fft.rfft(x), n=4), x)
 """,
         ],
         env=env,
@@ -55,31 +71,68 @@ np.testing.assert_allclose(np.fft.fft(x), expected)
     not HAS_SUBPROCESSES,
     reason="platform cannot start subprocesses",
 )
-def test_fft_disabled_cpu_dispatch():
-    targets = [name for name in ("X86_V4", "X86_V3")
-               if name in __cpu_dispatch__]
-    if not targets:
-        pytest.skip("no high x86 DUCC FFT dispatch target")
-
+def test_fft_automatic_cpu_dispatch():
     env = os.environ.copy()
     env.pop("NPY_ENABLE_CPU_FEATURES", None)
-    env["NPY_DISABLE_CPU_FEATURES"] = ",".join(targets)
-    run_subprocess(
-        [
-            sys.executable,
-            "-c",
-            f"""
-import numpy as np
-from numpy._core._multiarray_umath import __cpu_features__
+    env.pop("NPY_DISABLE_CPU_FEATURES", None)
+    env.pop("DUCCFFT_DISABLED_TARGETS", None)
+    _run_fft_dispatch_check(env)
 
-for target in {targets!r}:
-    assert not __cpu_features__[target]
-x = np.arange(16.)
-np.testing.assert_allclose(np.fft.ifft(np.fft.fft(x)), x)
-""",
-        ],
-        env=env,
+
+@pytest.mark.skipif(
+    not HAS_SUBPROCESSES,
+    reason="platform cannot start subprocesses",
+)
+def test_fft_baseline_cpu_dispatch():
+    targets = [
+        _dispatch_target_name(target)
+        for target in _duccfft_dispatch_targets()
+        if not target.startswith("baseline(")
+    ]
+    env = os.environ.copy()
+    env.pop("NPY_ENABLE_CPU_FEATURES", None)
+    env.pop("NPY_DISABLE_CPU_FEATURES", None)
+    env.pop("DUCCFFT_DISABLED_TARGETS", None)
+    if targets:
+        env["NPY_DISABLE_CPU_FEATURES"] = ",".join(targets)
+        env["DUCCFFT_DISABLED_TARGETS"] = ",".join(targets)
+    baseline = next(
+        target for target in _duccfft_dispatch_targets()
+        if target.startswith("baseline(")
     )
+    _run_fft_dispatch_check(env, baseline)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        _dispatch_target_name(target)
+        for target in _duccfft_dispatch_targets()
+        if not target.startswith("baseline(")
+    ],
+)
+@pytest.mark.skipif(
+    not HAS_SUBPROCESSES,
+    reason="platform cannot start subprocesses",
+)
+def test_fft_forced_cpu_dispatch(target):
+    if not __cpu_features__.get(target, False):
+        pytest.skip(f"CPU does not support DUCC FFT target {target}")
+
+    targets = [
+        _dispatch_target_name(name)
+        for name in _duccfft_dispatch_targets()
+        if not name.startswith("baseline(")
+    ]
+    higher_targets = targets[:targets.index(target)]
+    env = os.environ.copy()
+    env.pop("NPY_ENABLE_CPU_FEATURES", None)
+    env.pop("NPY_DISABLE_CPU_FEATURES", None)
+    env.pop("DUCCFFT_DISABLED_TARGETS", None)
+    if higher_targets:
+        env["NPY_DISABLE_CPU_FEATURES"] = ",".join(higher_targets)
+        env["DUCCFFT_DISABLED_TARGETS"] = ",".join(higher_targets)
+    _run_fft_dispatch_check(env, target)
 
 
 def fft1(x):

@@ -109,7 +109,7 @@ static bool ducc_backward = false;
 static PyUFuncGenericFunction fft_functions[] = {
     duccfft_c2c_double_wrapper,
     duccfft_c2c_float_wrapper,
-    wrap_fixed_cpp_ufunc<duccfft_impl::fft_loop<npy_longdouble>>,
+    wrap_fixed_cpp_ufunc<ducc0::duccfft_impl::fft_loop<npy_longdouble>>,
 };
 static const char fft_types[] = {
     NPY_CDOUBLE, NPY_DOUBLE, NPY_CDOUBLE,
@@ -130,12 +130,12 @@ static void *const ifft_data[] = {
 static PyUFuncGenericFunction rfft_n_even_functions[] = {
     duccfft_rfft_even_double_wrapper,
     duccfft_rfft_even_float_wrapper,
-    wrap_fixed_cpp_ufunc<duccfft_impl::rfft_n_even_loop<npy_longdouble>>
+    wrap_fixed_cpp_ufunc<ducc0::duccfft_impl::rfft_n_even_loop<npy_longdouble>>
 };
 static PyUFuncGenericFunction rfft_n_odd_functions[] = {
     duccfft_rfft_odd_double_wrapper,
     duccfft_rfft_odd_float_wrapper,
-    wrap_fixed_cpp_ufunc<duccfft_impl::rfft_n_odd_loop<npy_longdouble>>
+    wrap_fixed_cpp_ufunc<ducc0::duccfft_impl::rfft_n_odd_loop<npy_longdouble>>
 };
 static const char rfft_types[] = {
     NPY_DOUBLE, NPY_DOUBLE, NPY_CDOUBLE,
@@ -146,7 +146,7 @@ static const char rfft_types[] = {
 static PyUFuncGenericFunction irfft_functions[] = {
     duccfft_irfft_double_wrapper,
     duccfft_irfft_float_wrapper,
-    wrap_fixed_cpp_ufunc<duccfft_impl::irfft_loop<npy_longdouble>>
+    wrap_fixed_cpp_ufunc<ducc0::duccfft_impl::irfft_loop<npy_longdouble>>
 };
 static const char irfft_types[] = {
     NPY_CDOUBLE, NPY_DOUBLE, NPY_DOUBLE,
@@ -225,6 +225,17 @@ _duccfft_umath_exec(PyObject *m)
         return -1;
     }
     if (npy_cpu_init() < 0) {
+        return -1;
+    }
+
+    // Keep a private record of the target selected by this dispatcher.  The
+    // FFT tests use this to verify runtime dispatch rather than only checking
+    // that a transform succeeds.
+    const char *dispatch_info[] = NPY_CPU_DISPATCH_INFO();
+    if (PyModule_AddStringConstant(
+                m, "__duccfft_cpu_dispatch_target__", dispatch_info[0]) < 0 ||
+        PyModule_AddStringConstant(
+                m, "__duccfft_cpu_dispatch_targets__", dispatch_info[1]) < 0) {
         return -1;
     }
 

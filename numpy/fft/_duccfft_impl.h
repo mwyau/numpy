@@ -27,10 +27,11 @@
 
 #include "ducc0/fft/fftnd_impl.h"
 
+namespace DUCC0_NAMESPACE {
 namespace duccfft_impl {
 
-using ducc_shape_t = ducc0::fmav_info::shape_t;
-using ducc_stride_t = ducc0::fmav_info::stride_t;
+using ducc_shape_t = DUCC0_NAMESPACE::fmav_info::shape_t;
+using ducc_stride_t = DUCC0_NAMESPACE::fmav_info::stride_t;
 
 /* DUCC reinterprets NumPy's std::complex storage as Cmplx<T>. */
 template <typename T>
@@ -38,13 +39,13 @@ static inline void
 check_complex_representation()
 {
     static_assert(
-        sizeof(ducc0::Cmplx<T>) == sizeof(std::complex<T>),
+        sizeof(DUCC0_NAMESPACE::Cmplx<T>) == sizeof(std::complex<T>),
         "DUCC and NumPy complex values must have the same size");
     static_assert(
-        alignof(ducc0::Cmplx<T>) == alignof(std::complex<T>),
+        alignof(DUCC0_NAMESPACE::Cmplx<T>) == alignof(std::complex<T>),
         "DUCC and NumPy complex values must have the same alignment");
     static_assert(
-        std::is_trivially_copyable_v<ducc0::Cmplx<T>>,
+        std::is_trivially_copyable_v<DUCC0_NAMESPACE::Cmplx<T>>,
         "DUCC complex values must be trivially copyable");
     static_assert(
         std::is_trivially_copyable_v<std::complex<T>>,
@@ -185,7 +186,7 @@ run_local_c2c(char *ip, char *fp, char *op, size_t n_outer,
               npy_intp si, npy_intp sf, npy_intp so,
               npy_intp step_in, npy_intp step_out, bool forward)
 {
-    using complex_t = ducc0::Cmplx<T>;
+    using complex_t = DUCC0_NAMESPACE::Cmplx<T>;
     check_complex_representation<T>();
 
     // A row loop cannot preserve NumPy's snapshot semantics for overlapping
@@ -197,13 +198,13 @@ run_local_c2c(char *ip, char *fp, char *op, size_t n_outer,
     }
 
     size_t n_input = nin_available < nin ? nin_available : nin;
-    ducc0::pocketfft_c<T> plan(nout, false);
-    ducc0::aligned_array<complex_t> scratch(plan.bufsize());
+    DUCC0_NAMESPACE::pocketfft_c<T> plan(nout, false);
+    DUCC0_NAMESPACE::aligned_array<complex_t> scratch(plan.bufsize());
 
     const bool output_is_contiguous =
         step_out == static_cast<npy_intp>(sizeof(complex_t)) &&
         can_use_direct_view<complex_t>(op, so, step_out);
-    ducc0::aligned_array<complex_t> buffer(output_is_contiguous ? 0 : nout);
+    DUCC0_NAMESPACE::aligned_array<complex_t> buffer(output_is_contiguous ? 0 : nout);
 
     for (size_t i = 0; i < n_outer; ++i,
             ip += si, fp += sf, op += so) {
@@ -264,9 +265,9 @@ run_direct(char *ip, char *fp, char *op, size_t n_outer,
     }
     ducc_shape_t axes = one_dimensional ? ducc_shape_t{0} : ducc_shape_t{1};
 
-    auto in = ducc0::cfmav<Tin>(
+    auto in = DUCC0_NAMESPACE::cfmav<Tin>(
         reinterpret_cast<const Tin *>(ip), shape_in, strides_in);
-    auto out = ducc0::vfmav<Tout>(
+    auto out = DUCC0_NAMESPACE::vfmav<Tout>(
         reinterpret_cast<Tout *>(op), shape_out, strides_out);
     transform(in, out, axes, load_unaligned<Scale>(fp));
     return true;
@@ -297,8 +298,8 @@ run_staged(char *ip, char *fp, char *op, size_t n_outer,
     ducc_shape_t shape_out{nout};
     ducc_stride_t stride{1};
     ducc_shape_t axes{0};
-    auto in = ducc0::cfmav<Tin>(input.data(), shape_in, stride);
-    auto out = ducc0::vfmav<Tout>(output.data(), shape_out, stride);
+    auto in = DUCC0_NAMESPACE::cfmav<Tin>(input.data(), shape_in, stride);
+    auto out = DUCC0_NAMESPACE::vfmav<Tout>(output.data(), shape_out, stride);
 
     if (overlap) {
         char *input_ptr = ip;
@@ -314,7 +315,7 @@ run_staged(char *ip, char *fp, char *op, size_t n_outer,
             copy_input(ip, step_in, n_input, input.data(), nin);
         }
         auto input_view = overlap
-            ? ducc0::cfmav<Tin>(input.data() + i * nin, shape_in, stride)
+            ? DUCC0_NAMESPACE::cfmav<Tin>(input.data() + i * nin, shape_in, stride)
             : in;
         transform(input_view, out, axes, load_unaligned<Scale>(fp));
         copy_output(output.data(), op, step_out, nout);
@@ -343,7 +344,7 @@ fft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
 
     auto transform = [forward](const auto& in, auto& out,
                                const ducc_shape_t& axes, T fct) {
-        ducc0::c2c(in, out, axes, forward, fct, 1);
+        DUCC0_NAMESPACE::c2c(in, out, axes, forward, fct, 1);
     };
 
     if (sf == 0 && nin >= nout &&
@@ -384,7 +385,7 @@ rfft_impl(char **args, npy_intp const *dimensions, npy_intp const *steps,
 
     auto transform = [](const auto& in, auto& out,
                         const ducc_shape_t& axes, T fct) {
-        ducc0::r2c(in, out, axes, true, fct, 1);
+        DUCC0_NAMESPACE::r2c(in, out, axes, true, fct, 1);
     };
 
     if (sf == 0 && nin >= npts &&
@@ -441,7 +442,7 @@ irfft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
 
     auto transform = [](const auto& in, auto& out,
                         const ducc_shape_t& axes, T fct) {
-        ducc0::c2r(in, out, axes, false, fct, 1);
+        DUCC0_NAMESPACE::c2r(in, out, axes, false, fct, 1);
     };
 
     if (sf == 0 && nin >= npts_in &&
@@ -457,5 +458,6 @@ irfft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
 }
 
 }  // namespace duccfft_impl
+}  // namespace DUCC0_NAMESPACE
 
 #endif  // NUMPY_FFT_DUCCFFT_IMPL_H_
