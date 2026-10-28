@@ -61,6 +61,29 @@ expected_fft = np.array([10., -2. + 2.j, -2., -2. - 2.j])
 np.testing.assert_allclose(np.fft.fft(x), expected_fft)
 np.testing.assert_allclose(np.fft.ifft(expected_fft), x)
 np.testing.assert_allclose(np.fft.irfft(np.fft.rfft(x), n=4), x)
+
+for dtype in (np.complex64, np.complex128):
+    x = (np.arange(8, dtype=np.float32)
+         + 1j * np.arange(8, dtype=np.float32)[::-1]).astype(dtype)
+    spectrum = np.fft.fft(x)
+    assert spectrum.dtype == dtype
+    recovered = np.fft.ifft(spectrum)
+    assert recovered.dtype == dtype
+    tolerance = 1e-6 if dtype is np.complex64 else 1e-12
+    np.testing.assert_allclose(recovered, x, rtol=tolerance, atol=tolerance)
+
+for dtype in (np.float32, np.float64):
+    tolerance = 1e-6 if dtype is np.float32 else 1e-12
+    for n in (7, 8):
+        x = np.arange(n, dtype=dtype)
+        spectrum = np.fft.rfft(x)
+        expected_dtype = np.complex64 if dtype is np.float32 else np.complex128
+        assert spectrum.dtype == expected_dtype
+        recovered = np.fft.irfft(spectrum, n=n)
+        assert recovered.dtype == dtype
+        np.testing.assert_allclose(
+            recovered, x, rtol=tolerance, atol=tolerance
+        )
 """,
         ],
         env=env,
