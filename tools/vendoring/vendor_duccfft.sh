@@ -193,84 +193,6 @@ path = Path(sys.argv[1])
 path.write_text(path.read_text().rstrip() + "\n")
 PY
 
-# Local patch 2: NumPy keeps DUCC's plan cache but disables its worker pool.
-# Give only that cache-enabled no-worker build real mutex types. Fail closed if
-# an upstream update moves either expected section.
-python3 - "${STAGED_DIR}/infra/threading.h" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-header_before = """#ifdef DUCC0_STDCXX_LOWLEVEL_THREADING
-#include <mutex>
-#include <condition_variable>
-#endif
-
-#ifdef DUCC0_NO_LOWLEVEL_THREADING
-// no headers needed
-#endif
-"""
-header_after = """#if defined(DUCC0_STDCXX_LOWLEVEL_THREADING) || defined(DUCC0_FFT_CACHE_MUTEX)
-#include <mutex>
-#endif
-
-#ifdef DUCC0_STDCXX_LOWLEVEL_THREADING
-#include <condition_variable>
-#endif
-"""
-locks_before = """#ifdef DUCC0_NO_LOWLEVEL_THREADING
-struct Mutex
-  {
-  void lock(){}
-  void unlock(){}
-  };
-struct LockGuard
-  {
-  LockGuard(const Mutex &){}
-  };
-struct UniqueLock
-  {
-  UniqueLock(const Mutex &){}
-  void lock() {}
-  void unlock() {}
-  };
-struct CondVar
-"""
-locks_after = """#ifdef DUCC0_NO_LOWLEVEL_THREADING
-#ifdef DUCC0_FFT_CACHE_MUTEX
-// NumPy keeps DUCC's plan cache while disabling its worker pool.
-using Mutex = std::mutex;
-using LockGuard = std::lock_guard<Mutex>;
-using UniqueLock = std::unique_lock<Mutex>;
-#else
-struct Mutex
-  {
-  void lock(){}
-  void unlock(){}
-  };
-struct LockGuard
-  {
-  LockGuard(const Mutex &){}
-  };
-struct UniqueLock
-  {
-  UniqueLock(const Mutex &){}
-  void lock() {}
-  void unlock() {}
-  };
-#endif
-struct CondVar
-"""
-
-for before, after in ((header_before, header_after), (locks_before, locks_after)):
-    if text.count(before) != 1:
-        raise SystemExit(f"expected one DUCC threading section in {path}")
-    text = text.replace(before, after, 1)
-
-path.write_text(text)
-PY
-
 if ((CHECK_ONLY)); then
     if diff -ruN "${ROOT_DIR}" "${STAGED_DIR}"; then
         echo "vendored DUCC snapshot matches ${COMMIT_HASH}"
@@ -281,8 +203,8 @@ if ((CHECK_ONLY)); then
     exit 0
 fi
 
-# Install only after fetching, manifest/SPDX/license checks, and both local
-# patches have succeeded. The sibling staging directory keeps rename on the
+# Install only after fetching, manifest/SPDX/license checks, and the local
+# whitespace normalization have succeeded. The sibling staging directory keeps rename on the
 # same filesystem. If installation fails before the new tree is in place, the
 # EXIT trap restores the old tree from its backup.
 if [[ -e "${BACKUP_DIR}" ]]; then

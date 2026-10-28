@@ -3,12 +3,11 @@ if host_machine.system() == 'aix' or host_machine.system() == 'AIX'
   largefile_define += '-D_LARGE_FILES'
 endif
 
-# Keep DUCC single-threaded.  The small vendoring patch gives its no-worker
-# mode a real mutex for the built-in plan cache, which must be safe when NumPy
-# releases the GIL around simultaneous FFT calls.
+# Match NumPy's no-plan-cache policy.  No worker pool, shared cache, or
+# cache mutex is needed; separate Python threads can still invoke FFTs.
 duccfft_args = [
   '-DDUCC0_NO_LOWLEVEL_THREADING',
-  '-DDUCC0_FFT_CACHE_MUTEX',
+  '-DDUCC0_NO_FFT_CACHE',
 ]
 
 duccfft_sources = [
@@ -68,6 +67,7 @@ py.install_sources(
     'tests/__init__.py',
     'tests/test_helper.py',
     'tests/test_duccfft.py',
+    'tests/test_native_nd_experiment.py',
   ],
   subdir: 'numpy/fft/tests',
   install_tag: 'tests'

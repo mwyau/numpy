@@ -84,12 +84,13 @@ static_assert(false, "DUCC0_STDCXX_LOWLEVEL_THREADING must not be defined extern
 #include "ducc0/infra/error_handling.h"
 
 // threading-specific headers
-#if defined(DUCC0_STDCXX_LOWLEVEL_THREADING) || defined(DUCC0_FFT_CACHE_MUTEX)
+#ifdef DUCC0_STDCXX_LOWLEVEL_THREADING
 #include <mutex>
+#include <condition_variable>
 #endif
 
-#ifdef DUCC0_STDCXX_LOWLEVEL_THREADING
-#include <condition_variable>
+#ifdef DUCC0_NO_LOWLEVEL_THREADING
+// no headers needed
 #endif
 
 namespace DUCC0_NAMESPACE {
@@ -137,12 +138,6 @@ using CondVar = std::condition_variable;
 #endif
 
 #ifdef DUCC0_NO_LOWLEVEL_THREADING
-#ifdef DUCC0_FFT_CACHE_MUTEX
-// NumPy keeps DUCC's plan cache while disabling its worker pool.
-using Mutex = std::mutex;
-using LockGuard = std::lock_guard<Mutex>;
-using UniqueLock = std::unique_lock<Mutex>;
-#else
 struct Mutex
   {
   void lock(){}
@@ -158,7 +153,6 @@ struct UniqueLock
   void lock() {}
   void unlock() {}
   };
-#endif
 struct CondVar
   {
   template<class Predicate>

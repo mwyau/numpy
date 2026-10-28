@@ -9,15 +9,12 @@ The odd-sized DCT-IV helper is derived from FFTW3's `apply_re11()` and is
 included under the 3-clause BSD permission recorded in `LICENSE.md`, with
 Matteo Frigo and Steven G. Johnson attributed in the source and license file.
 
-The vendoring script also applies one local change to `infra/threading.h`:
-when `DUCC0_NO_LOWLEVEL_THREADING` and `DUCC0_FFT_CACHE_MUTEX` are defined,
-DUCC's no-op lock types are replaced with `std::mutex` wrappers. NumPy disables
-DUCC's worker pool but retains its FFT plan cache, so this mutex protects cache
-access while FFT calls can run concurrently without the GIL. The cache mutex
-macro is enabled by `numpy/fft/meson.build`; the worker pool remains disabled.
+NumPy builds DUCC with `DUCC0_NO_LOWLEVEL_THREADING` and
+`DUCC0_NO_FFT_CACHE`. No shared plan cache or custom mutex adaptation is
+required. The vendored threading header is kept identical to upstream.
 
 The script normalizes trailing blank whitespace in `infra/aligned_array.h` so
-the vendored source diff passes `git diff --check`. Both local patches are
+the vendored source diff passes `git diff --check`. The normalization is
 applied in a staging directory before the checked-in source tree is replaced.
 Run `tools/vendoring/vendor_duccfft.sh --check` to verify that the current
 vendored tree matches the pinned DUCC source and these patches. For offline
