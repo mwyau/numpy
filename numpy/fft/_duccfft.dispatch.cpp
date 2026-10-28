@@ -31,3 +31,22 @@ DUCCFFT_DEFINE_ENTRY(duccfft_irfft_double, irfft_loop<npy_double>)
 DUCCFFT_DEFINE_ENTRY(duccfft_irfft_float, irfft_loop<npy_float>)
 
 #undef DUCCFFT_DEFINE_ENTRY
+
+/* Native C2C across multiple FFT axes; input/output are NumPy arrays checked
+ * for matching, aligned, contiguous complex storage by the Python wrapper. */
+#define DUCCFFT_DEFINE_NATIVE_ND(NAME, TYPE)                               \
+    NPY_NO_EXPORT void NPY_CPU_DISPATCH_CURFX(NAME)(                        \
+            const void *input, void *output, const npy_intp *shape,         \
+            const npy_intp *istrides, const npy_intp *ostrides,             \
+            const npy_intp *axes, npy_intp ndim, npy_intp naxes,           \
+            bool forward, double factor)                                   \
+    {                                                                      \
+        DUCC0_NAMESPACE::duccfft_impl::native_c2c_nd<TYPE>(                \
+            input, output, shape, istrides, ostrides, axes, ndim, naxes,    \
+            forward, factor);                                              \
+    }
+
+DUCCFFT_DEFINE_NATIVE_ND(duccfft_native_nd_double, npy_double)
+DUCCFFT_DEFINE_NATIVE_ND(duccfft_native_nd_float, npy_float)
+#undef DUCCFFT_DEFINE_NATIVE_ND
+

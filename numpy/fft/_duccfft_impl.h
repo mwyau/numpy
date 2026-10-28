@@ -457,6 +457,46 @@ irfft_loop(char **args, npy_intp const *dimensions, npy_intp const *steps,
         si, sf, so, step_in, step_out, transform);
 }
 
+
+/*
+ * Experimental native multi-axis C2C entry point.  Unlike the gufunc path,
+ * this hands all requested axes to DUCC in one operation.  Python selects
+ * the eligible contiguous complex case and retains legacy fallback for
+ * resized, overlapping, strided, and repeated-axis inputs.
+ */
+template <typename T>
+static void
+native_c2c_nd(const void *input, void *output,
+              const npy_intp *shape, const npy_intp *input_strides,
+              const npy_intp *output_strides, const npy_intp *axes,
+              npy_intp ndim, npy_intp naxes, bool forward, double factor)
+{
+    using complex_t = std::complex<T>;
+    check_complex_representation<T>();
+    ducc_shape_t dims, transform_axes;
+    ducc_stride_t istrides, ostrides;
+    dims.reserve(static_cast<size_t>(ndim));
+    istrides.reserve(static_cast<size_t>(ndim));
+    ostrides.reserve(static_cast<size_t>(ndim));
+    transform_axes.reserve(static_cast<size_t>(naxes));
+    for (npy_intp j = 0; j < ndim; ++j) {
+        dims.push_back(static_cast<size_t>(shape[j]));
+        istrides.push_back(
+            static_cast<ptrdiff_t>(input_strides[j] / sizeof(complex_t)));
+        ostrides.push_back(
+            static_cast<ptrdiff_t>(output_strides[j] / sizeof(complex_t)));
+    }
+    for (npy_intp j = 0; j < naxes; ++j) {
+        transform_axes.push_back(static_cast<size_t>(axes[j]));
+    }
+    auto in = DUCC0_NAMESPACE::cfmav<complex_t>(
+        reinterpret_cast<const complex_t *>(input), dims, istrides);
+    auto out = DUCC0_NAMESPACE::vfmav<complex_t>(
+        reinterpret_cast<complex_t *>(output), dims, ostrides);
+    DUCC0_NAMESPACE::c2c(in, out, transform_axes, forward,
+                         static_cast<T>(factor), 1);
+}
+
 }  // namespace duccfft_impl
 }  // namespace DUCC0_NAMESPACE
 

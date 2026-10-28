@@ -11,8 +11,11 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
+#include <algorithm>
+#include <cmath>
 #include <exception>
 #include <new>
+#include <vector>
 
 #include "numpy/arrayobject.h"
 #include "numpy/ufuncobject.h"
@@ -44,6 +47,17 @@ NPY_CPU_DISPATCH_DECLARE(
     NPY_NO_EXPORT void duccfft_irfft_double, DUCCFFT_DISPATCH_SIGNATURE)
 NPY_CPU_DISPATCH_DECLARE(
     NPY_NO_EXPORT void duccfft_irfft_float, DUCCFFT_DISPATCH_SIGNATURE)
+
+
+/* Native ND C2C is dispatched through the same CPU-target machinery. */
+#define DUCCFFT_ND_SIGNATURE \
+    (const void *, void *, const npy_intp *, const npy_intp *, \
+     const npy_intp *, const npy_intp *, npy_intp, npy_intp, bool, double)
+NPY_CPU_DISPATCH_DECLARE(
+    NPY_NO_EXPORT void duccfft_native_nd_double, DUCCFFT_ND_SIGNATURE)
+NPY_CPU_DISPATCH_DECLARE(
+    NPY_NO_EXPORT void duccfft_native_nd_float, DUCCFFT_ND_SIGNATURE)
+#undef DUCCFFT_ND_SIGNATURE
 
 static void
 wrap_cpp_ufunc(duccfft_loop implementation, char **args,
@@ -206,6 +220,104 @@ add_gufuncs(PyObject *dictionary)
     return 0;
 }
 
+
+using duccfft_nd_loop = void (*)(
+    const void *, void *, const npy_intp *, const npy_intp *,
+    const npy_intp *, const npy_intp *, npy_intp, npy_intp, bool, double);
+static duccfft_nd_loop duccfft_native_nd_double_ptr = nullptr;
+static duccfft_nd_loop duccfft_native_nd_float_ptr = nullptr;
+
+static PyObject *
+duccfft_c2c_nd(PyObject * /*module*/, PyObject *args)
+{
+    PyObject *input_obj, *output_obj, *axes_obj;
+    int forward;
+    double factor;
+    if (!PyArg_ParseTuple(args, "OOOpd:c2c_nd", &input_obj, &output_obj,
+                          &axes_obj, &forward, &factor)) {
+        return nullptr;
+    }
+    if (!PyArray_Check(input_obj) || !PyArray_Check(output_obj) ||
+        !PyTuple_Check(axes_obj)) {
+        PyErr_SetString(PyExc_TypeError, "expected input/output ndarrays and axes tuple");
+        return nullptr;
+    }
+    auto *in = reinterpret_cast<PyArrayObject *>(input_obj);
+    auto *out = reinterpret_cast<PyArrayObject *>(output_obj);
+    const int ndim = PyArray_NDIM(in);
+    const int typenum = PyArray_TYPE(in);
+    const npy_intp naxes = PyTuple_GET_SIZE(axes_obj);
+    if (ndim < 2 || naxes < 2 || naxes > ndim ||
+        PyArray_NDIM(out) != ndim || typenum != PyArray_TYPE(out) ||
+        (typenum != NPY_CFLOAT && typenum != NPY_CDOUBLE) ||
+        !PyArray_IS_C_CONTIGUOUS(in) || !PyArray_IS_C_CONTIGUOUS(out) ||
+        !PyArray_ISALIGNED(in) || !PyArray_ISALIGNED(out) ||
+        !PyArray_ISWRITEABLE(out)) {
+        PyErr_SetString(PyExc_ValueError,
+                        "native ND needs aligned contiguous matching complex arrays");
+        return nullptr;
+    }
+    if (!std::isfinite(factor)) {
+        PyErr_SetString(PyExc_ValueError, "nonfinite FFT scale");
+        return nullptr;
+    }
+    for (int j = 0; j < ndim; ++j) {
+        if (PyArray_DIMS(in)[j] != PyArray_DIMS(out)[j]) {
+            PyErr_SetString(PyExc_ValueError, "native ND dimensions differ");
+            return nullptr;
+        }
+    }
+    std::vector<npy_intp> axes(static_cast<size_t>(naxes));
+    for (npy_intp j = 0; j < naxes; ++j) {
+        npy_intp axis = PyArray_PyIntAsIntp(PyTuple_GET_ITEM(axes_obj, j));
+        if (axis == -1 && PyErr_Occurred()) {
+            return nullptr;
+        }
+        if (axis < 0 || axis >= ndim ||
+            std::find(axes.begin(), axes.begin() + j, axis) != axes.begin() + j) {
+            PyErr_SetString(PyExc_ValueError, "invalid or repeated native ND axis");
+            return nullptr;
+        }
+        axes[static_cast<size_t>(j)] = axis;
+    }
+    auto transform = typenum == NPY_CFLOAT
+        ? duccfft_native_nd_float_ptr : duccfft_native_nd_double_ptr;
+    if (!transform) {
+        PyErr_SetString(PyExc_RuntimeError, "native FFT CPU dispatch not initialized");
+        return nullptr;
+    }
+    std::exception_ptr error;
+    PyThreadState *thread_state = PyEval_SaveThread();
+    try {
+        transform(PyArray_DATA(in), PyArray_DATA(out), PyArray_DIMS(in),
+                  PyArray_STRIDES(in), PyArray_STRIDES(out), axes.data(),
+                  ndim, naxes, forward != 0, factor);
+    }
+    catch (...) {
+        error = std::current_exception();
+    }
+    PyEval_RestoreThread(thread_state);
+    if (error) {
+        try {
+            std::rethrow_exception(error);
+        }
+        catch (const std::bad_alloc &) {
+            return PyErr_NoMemory();
+        }
+        catch (const std::exception &exc) {
+            PyErr_SetString(PyExc_RuntimeError, exc.what());
+            return nullptr;
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+static PyMethodDef duccfft_private_methods[] = {
+    {"c2c_nd", duccfft_c2c_nd, METH_VARARGS,
+     "Experimental single DUCC C2C transform across several axes."},
+    {nullptr, nullptr, 0, nullptr}
+};
+
 static int module_loaded = 0;
 
 static int
@@ -251,6 +363,8 @@ _duccfft_umath_exec(PyObject *m)
         NPY_CPU_DISPATCH_CALL(duccfft_rfft_odd_float);
     duccfft_irfft_double_ptr = NPY_CPU_DISPATCH_CALL(duccfft_irfft_double);
     duccfft_irfft_float_ptr = NPY_CPU_DISPATCH_CALL(duccfft_irfft_float);
+    duccfft_native_nd_double_ptr = NPY_CPU_DISPATCH_CALL(duccfft_native_nd_double);
+    duccfft_native_nd_float_ptr = NPY_CPU_DISPATCH_CALL(duccfft_native_nd_float);
 
     if (add_gufuncs(PyModule_GetDict(m)) < 0) {
         return -1;
@@ -275,7 +389,7 @@ static struct PyModuleDef moduledef = {
     "_duccfft_umath",
     NULL,
     0,
-    NULL,
+    duccfft_private_methods,
     _duccfft_umath_slots,
 };
 

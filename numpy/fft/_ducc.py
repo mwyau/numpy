@@ -31,11 +31,15 @@ __all__ = ['fft', 'ifft', 'rfft', 'irfft', 'hfft', 'ihfft', 'rfftn',
            'irfftn', 'rfft2', 'irfft2', 'fft2', 'ifft2', 'fftn', 'ifftn']
 
 import functools
+import math
+import os
 import warnings
 
 from numpy._core import (
     asarray,
     conjugate,
+    complex64,
+    complex128,
     empty_like,
     overrides,
     reciprocal,
@@ -46,6 +50,9 @@ from numpy._core import (
 from numpy.lib.array_utils import normalize_axis_index
 
 from . import _duccfft_umath as duccfft
+
+# This branch opts into the native-ND experiment unless explicitly disabled.
+_NATIVE_ND_ENABLED = os.environ.get("NPY_DUCCFFT_NATIVE_ND", "1") != "0"
 
 array_function_dispatch = functools.partial(
     overrides.array_function_dispatch, module='numpy.fft')
@@ -718,9 +725,45 @@ def _cook_nd_args(a, s=None, axes=None, invreal=0):
     return s, axes
 
 
+
+def _try_native_c2c_nd(a, s, axes, function, norm, out):
+    """Native multi-axis DUCC path for contiguous C2C without resizing.
+
+    Cases requiring NumPy's exact sequential semantics retain the gufunc loop,
+    including repeated axes, noncontiguous arrays, out=, and padding/cropping.
+    """
+    if not _NATIVE_ND_ENABLED or out is not None or (
+        function is not fft and function is not ifft
+    ):
+        return None
+    if (a.ndim < 2 or len(axes) < 2 or len(set(axes)) != len(axes) or
+        a.dtype not in (complex64, complex128) or
+        not a.flags.c_contiguous or not a.flags.aligned or
+        norm not in (None, "backward", "forward", "ortho") or
+        any(n != a.shape[axis] or n < 1 for n, axis in zip(s, axes))):
+        return None
+
+    forward = function is fft
+    points = math.prod(s)
+    if norm == "ortho":
+        factor = 1.0 / math.sqrt(points)
+    elif (not forward and norm in (None, "backward")) or (
+        forward and norm == "forward"
+    ):
+        factor = 1.0 / points
+    else:
+        factor = 1.0
+    result = empty_like(a, order="C")
+    duccfft.c2c_nd(a, result, tuple(axes), forward, factor)
+    return result
+
+
 def _raw_fftnd(a, s=None, axes=None, function=fft, norm=None, out=None):
     a = asarray(a)
     s, axes = _cook_nd_args(a, s, axes)
+    native = _try_native_c2c_nd(a, s, axes, function, norm, out)
+    if native is not None:
+        return native
     itl = list(range(len(axes)))
     itl.reverse()
     for ii in itl:

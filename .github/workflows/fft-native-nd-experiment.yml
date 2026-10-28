@@ -1,0 +1,35 @@
+name: Experimental native DUCC ND C2C
+
+on:
+  push:
+    branches:
+      - exp/duccfft-native-nd
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-nd:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 80
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install build and test dependencies
+        run: python -m pip install --group dev-cli --group test-core
+      - name: Build CPU-dispatched NumPy with native ND C2C
+        run: spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min -Dcpu-dispatch=max
+      - name: Run focused native ND and dispatch tests
+        run: spin test numpy/fft/tests/test_native_nd_experiment.py numpy/fft/tests/test_duccfft.py -- --timeout=600
+      - name: Compare enabled and legacy fallback paths
+        run: |
+          spin python -c 'import numpy as np; from numpy.fft import _ducc; a=np.ones((16,32), dtype=np.complex128); assert _ducc._try_native_c2c_nd(a, a.shape, (0,1), np.fft.fft, None, None) is not None; print("native_nd_enabled")'
+          NPY_DUCCFFT_NATIVE_ND=0 spin python -c 'import numpy as np; from numpy.fft import _ducc; a=np.ones((16,32), dtype=np.complex128); assert _ducc._try_native_c2c_nd(a, a.shape, (0,1), np.fft.fft, None, None) is None; print("legacy_nd_fallback")'
