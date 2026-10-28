@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
-# Vendor the DUCC sources used by NumPy's FFT backend.
+# Vendor the pinned DUCC sources used by NumPy's FFT backend.
 #
-# The manifest below is the source of truth for the vendored implementation
-# closure.  SPDX validation is kept separate so that a DUCC update cannot
-# silently change the license of a required file.
+# Run with --check to verify the checked-in snapshot without changing it. A
+# local source checkout can be supplied for offline checks, but it must be at
+# the pinned commit. Updates from that checkout also require a clean DUCC tree.
 
 set -o errexit
 set -o nounset
@@ -14,7 +14,7 @@ readonly REPO_URL="https://gitlab.mpcdf.mpg.de/mtr/ducc.git"
 readonly COMMIT_HASH="d8f5ffe71945aa5614cf61731dcb5dcc7789680f"
 readonly SPDX_LICENSE="BSD-3-Clause OR GPL-2.0-or-later"
 
-# Transitive DUCC FFT implementation closure used by numpy/fft.  The .cc
+# Transitive DUCC FFT implementation closure used by numpy/fft. The .cc
 # files are compiled by numpy/fft/meson.build; the headers are reached from
 # fftnd_impl.h and the support sources.
 readonly DUCC_SOURCE_FILES=(
@@ -36,35 +36,106 @@ readonly DUCC_SOURCE_FILES=(
     "math/unity_roots.h"
 )
 
-readonly ROOT_DIR="$(git rev-parse --show-toplevel)/numpy/fft/ducc0"
+usage() {
+    cat <<'EOF'
+Usage: vendor_duccfft.sh [--check] [--source-dir PATH]
+
+  --check          Compare the generated files with the checked-in snapshot.
+  --source-dir     Use a local DUCC checkout already at the pinned commit.
+  -h, --help       Show this help.
+EOF
+}
+
+CHECK_ONLY=0
+SOURCE_DIR_OVERRIDE=""
+while (($#)); do
+    case "$1" in
+        --check)
+            CHECK_ONLY=1
+            ;;
+        --source-dir)
+            if (($# < 2)); then
+                echo "--source-dir requires a path" >&2
+                exit 2
+            fi
+            SOURCE_DIR_OVERRIDE="$2"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+readonly REPO_ROOT="$(git rev-parse --show-toplevel)"
+readonly ROOT_DIR="${REPO_ROOT}/numpy/fft/ducc0"
+readonly ROOT_PARENT="$(dirname "${ROOT_DIR}")"
 readonly TEMP_DIR="$(mktemp -d)"
+readonly STAGE_PARENT="$(mktemp -d "${ROOT_PARENT}/.ducc0.stage.XXXXXX")"
+readonly STAGED_DIR="${STAGE_PARENT}/ducc0"
 readonly SOURCE_DIR="${TEMP_DIR}/ducc"
 readonly SELECTED_DIR="${TEMP_DIR}/selected"
+readonly BACKUP_DIR="${ROOT_DIR}.backup.$$"
+
+BACKUP_MOVED=0
 
 cleanup() {
-    rm -rf "${TEMP_DIR}"
+    local status=$?
+    if ((BACKUP_MOVED)) && [[ ! -e "${ROOT_DIR}" ]]; then
+        if ! mv "${BACKUP_DIR}" "${ROOT_DIR}"; then
+            echo "failed to restore ${ROOT_DIR}; recovery copy remains at ${BACKUP_DIR}" >&2
+            status=1
+        fi
+    fi
+    rm -rf "${TEMP_DIR}" "${STAGE_PARENT}"
+    exit "${status}"
 }
 trap cleanup EXIT
 
-# Keep the checked-in license and reproduction note while refreshing the
-# source files generated below.
-readonly METADATA_DIR="${TEMP_DIR}/metadata"
-mkdir -p "${METADATA_DIR}"
-cp "${ROOT_DIR}/LICENSE.md" "${METADATA_DIR}/LICENSE.md"
-cp "${ROOT_DIR}/README.md" "${METADATA_DIR}/README.md"
+if [[ ! -f "${ROOT_DIR}/LICENSE.md" || ! -f "${ROOT_DIR}/README.md" ]]; then
+    echo "expected vendored LICENSE.md and README.md in ${ROOT_DIR}" >&2
+    exit 1
+fi
 
-git clone "${REPO_URL}" "${SOURCE_DIR}"
-git -C "${SOURCE_DIR}" checkout --quiet "${COMMIT_HASH}"
+if [[ -n "${SOURCE_DIR_OVERRIDE}" ]]; then
+    if [[ ! -d "${SOURCE_DIR_OVERRIDE}" ]]; then
+        echo "DUCC source directory does not exist: ${SOURCE_DIR_OVERRIDE}" >&2
+        exit 1
+    fi
+    source_dir="$(cd "${SOURCE_DIR_OVERRIDE}" && pwd)"
+else
+    git clone --quiet "${REPO_URL}" "${SOURCE_DIR}"
+    git -C "${SOURCE_DIR}" checkout --quiet --detach "${COMMIT_HASH}"
+    source_dir="${SOURCE_DIR}"
+fi
 
-actual_commit="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
+actual_commit="$(git -C "${source_dir}" rev-parse HEAD)"
 if [[ "${actual_commit}" != "${COMMIT_HASH}" ]]; then
     echo "DUCC checkout is ${actual_commit}, expected ${COMMIT_HASH}" >&2
     exit 1
 fi
+if [[ -n "${SOURCE_DIR_OVERRIDE}" ]] && ((!CHECK_ONLY)); then
+    if ! git -C "${source_dir}" diff --quiet "${COMMIT_HASH}" -- src/ducc0; then
+        echo "DUCC source tree has local changes: ${source_dir}" >&2
+        exit 1
+    fi
+    untracked_files="$(git -C "${source_dir}" ls-files --others --exclude-standard -- src/ducc0)"
+    if [[ -n "${untracked_files}" ]]; then
+        echo "DUCC source tree has untracked files: ${source_dir}" >&2
+        exit 1
+    fi
+fi
 
-mkdir -p "${SELECTED_DIR}/src/ducc0"
+mkdir -p "${SELECTED_DIR}/src/ducc0" "${STAGED_DIR}"
 for relative_path in "${DUCC_SOURCE_FILES[@]}"; do
-    source_file="${SOURCE_DIR}/src/ducc0/${relative_path}"
+    source_file="${source_dir}/src/ducc0/${relative_path}"
     if [[ ! -f "${source_file}" ]]; then
         echo "DUCC manifest entry does not exist: src/ducc0/${relative_path}" >&2
         exit 1
@@ -102,17 +173,19 @@ for name, text in (("fft1d_impl.h", fft1d_h), ("fftnd_impl.h", fftnd_h)):
             raise SystemExit(f"missing or duplicate FFTW attribution in {name}")
 PY
 
-rm -rf "${ROOT_DIR}"
-mkdir -p "${ROOT_DIR}"
 for relative_path in "${DUCC_SOURCE_FILES[@]}"; do
-    destination="${ROOT_DIR}/${relative_path}"
+    destination="${STAGED_DIR}/${relative_path}"
     mkdir -p "$(dirname "${destination}")"
     cp "${SELECTED_DIR}/src/ducc0/${relative_path}" "${destination}"
 done
 
-# Avoid a whitespace-only extra line at EOF in the upstream aligned-array
-# header so the vendored diff passes git diff --check.
-python3 - "${ROOT_DIR}/infra/aligned_array.h" <<'PY'
+# Preserve the checked-in license selection and reproduction note.
+cp "${ROOT_DIR}/LICENSE.md" "${STAGED_DIR}/LICENSE.md"
+cp "${ROOT_DIR}/README.md" "${STAGED_DIR}/README.md"
+
+# Local patch 1: normalize DUCC's trailing blank whitespace in this header so
+# the vendored diff passes git diff --check.
+python3 - "${STAGED_DIR}/infra/aligned_array.h" <<'PY'
 from pathlib import Path
 import sys
 
@@ -120,11 +193,10 @@ path = Path(sys.argv[1])
 path.write_text(path.read_text().rstrip() + "\n")
 PY
 
-# NumPy retains DUCC's plan cache but disables its worker pool.  The upstream
-# no-worker configuration provides no-op locks, so give only the cache-enabled
-# no-worker build real mutex types.  Fail closed if an upstream refresh moves
-# either of the expected sections.
-python3 - "${ROOT_DIR}/infra/threading.h" <<'PY'
+# Local patch 2: NumPy keeps DUCC's plan cache but disables its worker pool.
+# Give only that cache-enabled no-worker build real mutex types. Fail closed if
+# an upstream update moves either expected section.
+python3 - "${STAGED_DIR}/infra/threading.h" <<'PY'
 from pathlib import Path
 import sys
 
@@ -199,5 +271,32 @@ for before, after in ((header_before, header_after), (locks_before, locks_after)
 path.write_text(text)
 PY
 
-cp "${METADATA_DIR}/LICENSE.md" "${ROOT_DIR}/LICENSE.md"
-cp "${METADATA_DIR}/README.md" "${ROOT_DIR}/README.md"
+if ((CHECK_ONLY)); then
+    if diff -ruN "${ROOT_DIR}" "${STAGED_DIR}"; then
+        echo "vendored DUCC snapshot matches ${COMMIT_HASH}"
+    else
+        echo "vendored DUCC snapshot differs from ${COMMIT_HASH}" >&2
+        exit 1
+    fi
+    exit 0
+fi
+
+# Install only after fetching, manifest/SPDX/license checks, and both local
+# patches have succeeded. The sibling staging directory keeps rename on the
+# same filesystem. If installation fails before the new tree is in place, the
+# EXIT trap restores the old tree from its backup.
+if [[ -e "${BACKUP_DIR}" ]]; then
+    echo "refusing to overwrite existing recovery path: ${BACKUP_DIR}" >&2
+    exit 1
+fi
+mv "${ROOT_DIR}" "${BACKUP_DIR}"
+BACKUP_MOVED=1
+if ! mv "${STAGED_DIR}" "${ROOT_DIR}"; then
+    echo "failed to install staged DUCC tree; restoring previous tree" >&2
+    mv "${BACKUP_DIR}" "${ROOT_DIR}"
+    BACKUP_MOVED=0
+    exit 1
+fi
+rm -rf "${BACKUP_DIR}"
+BACKUP_MOVED=0
+echo "updated vendored DUCC sources at ${ROOT_DIR} from ${COMMIT_HASH}"

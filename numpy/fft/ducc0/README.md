@@ -16,6 +16,14 @@ DUCC's worker pool but retains its FFT plan cache, so this mutex protects cache
 access while FFT calls can run concurrently without the GIL. The cache mutex
 macro is enabled by `numpy/fft/meson.build`; the worker pool remains disabled.
 
+The script normalizes trailing blank whitespace in `infra/aligned_array.h` so
+the vendored source diff passes `git diff --check`. Both local patches are
+applied in a staging directory before the checked-in source tree is replaced.
+Run `tools/vendoring/vendor_duccfft.sh --check` to verify that the current
+vendored tree matches the pinned DUCC source and these patches. For offline
+verification, pass `--source-dir PATH` for a local checkout at the pinned
+commit. Update mode requires that local source tree to be clean.
+
 `infra/threading.cc` also contains an optional, disabled helper adapted from
 TensorFlow. Its attribution and Apache-2.0 license are included in
 `LICENSE.md`.
