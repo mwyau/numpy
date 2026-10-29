@@ -1,10 +1,9 @@
 """DUCC native multi-axis C2C parity, output, and fallback checks."""
 
-import numpy as np
 import pytest
 
-from numpy.fft import _ducc as backend
-from numpy.fft import _duccfft_umath
+import numpy as np
+from numpy.fft import _ducc as backend, _duccfft_umath
 
 
 def _sequential(a, axes, inverse, norm):

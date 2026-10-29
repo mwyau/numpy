@@ -36,9 +36,9 @@ import warnings
 
 from numpy._core import (
     asarray,
-    conjugate,
     complex64,
     complex128,
+    conjugate,
     empty_like,
     overrides,
     reciprocal,
@@ -719,7 +719,6 @@ def _cook_nd_args(a, s=None, axes=None, invreal=0):
     # use the whole input array along axis `i` if `s[i] == -1`
     s = [a.shape[_a] if _s == -1 else _s for _s, _a in zip(s, axes)]
     return s, axes
-
 
 
 def _try_native_c2c_nd(a, s, axes, function, norm, out):
