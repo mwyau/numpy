@@ -732,7 +732,7 @@ def _try_native_c2c_nd(a, s, axes, function, norm, out):
     Cases requiring NumPy's exact sequential semantics retain the gufunc loop,
     including repeated axes, noncontiguous arrays, out=, and padding/cropping.
     """
-    if not _NATIVE_ND_ENABLED or out is not None or (
+    if not _NATIVE_ND_ENABLED or (
         function is not fft and function is not ifft
     ):
         return None
@@ -760,8 +760,21 @@ def _try_native_c2c_nd(a, s, axes, function, norm, out):
         factor = 1.0 / points
     else:
         factor = 1.0
+    # NumPy's out= tests require bitwise agreement between the default
+    # and explicit-output calls. Running the legacy axis loop only for
+    # out= produces small roundoff differences from native multi-axis DUCC.
+    # Compute separately and copy into out after the transform, preserving
+    # aliasing semantics and arbitrary output memory order.
+    if out is not None and (
+        not hasattr(out, "dtype") or out.dtype != a.dtype or
+        out.shape != a.shape or not out.flags.writeable
+    ):
+        return None
     result = empty_like(a, order="C")
     duccfft.c2c_nd(a, result, native_axes, forward, factor)
+    if out is not None:
+        out[...] = result
+        return out
     return result
 
 

@@ -69,9 +69,10 @@ def test_resizing_and_out_fallback():
                                        None, None) is None
     result = np.empty_like(a)
     assert backend._try_native_c2c_nd(a, (6, 8), (0, 1), np.fft.fft,
-                                       None, result) is None
+                                       None, result) is result
+    np.testing.assert_array_equal(result, np.fft.fftn(a, axes=(0, 1)))
     np.testing.assert_allclose(
-        np.fft.fftn(a, s=(4, 8)), _sequential(a[:4], (0, 1), False, None),
+        np.fft.fftn(a, s=(4, 8), axes=(0, 1)), _sequential(a[:4], (0, 1), False, None),
         atol=1e-12
     )
     assert np.fft.fftn(a, out=result) is result
@@ -105,6 +106,29 @@ def test_alias_axes_use_legacy_fallback():
     assert backend._try_native_c2c_nd(
         a, (4, 4), (0, -2), np.fft.fft, None, None
     ) is None
+
+
+@pytest.mark.parametrize("order", ["C", "F"])
+@pytest.mark.parametrize("inverse", [False, True])
+def test_native_nd_explicit_output_matches_default_bitwise(order, inverse):
+    rng = np.random.default_rng(729)
+    a = (rng.standard_normal((5, 8, 9)) +
+         1j * rng.standard_normal((5, 8, 9))).astype(np.complex128)
+    transform = np.fft.ifftn if inverse else np.fft.fftn
+    expected = transform(a, axes=(0, 2))
+    out = np.empty_like(a, order=order)
+    assert transform(a, axes=(0, 2), out=out) is out
+    np.testing.assert_array_equal(out, expected)
+
+
+def test_native_nd_alias_output_matches_default_bitwise():
+    rng = np.random.default_rng(729)
+    a = (rng.standard_normal((5, 8)) +
+         1j * rng.standard_normal((5, 8))).astype(np.complex128)
+    expected = np.fft.fftn(a)
+    assert np.fft.fftn(a, out=a) is a
+    np.testing.assert_array_equal(a, expected)
+
 
 def test_native_extension_rejects_invalid_arrays():
     a = np.ones((4, 8), np.complex128)
