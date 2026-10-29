@@ -13,11 +13,7 @@ jobs:
   inspect:
     runs-on: ubuntu-26.04
     timeout-minutes: 75
-    # GCC on these runners defaults to AVX2. Force a real x86-64-v2
-    # baseline before NumPy's multi-target feature flags are appended.
-    env:
-      CFLAGS: -march=x86-64-v2
-      CXXFLAGS: -march=x86-64-v2
+    # Do not override compiler defaults: verify meson.build enforces baseline.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
