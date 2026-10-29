@@ -50,3 +50,25 @@ DUCCFFT_DEFINE_NATIVE_ND(duccfft_native_nd_double, npy_double)
 DUCCFFT_DEFINE_NATIVE_ND(duccfft_native_nd_float, npy_float)
 #undef DUCCFFT_DEFINE_NATIVE_ND
 
+
+// Diagnostic only: records the SIMD ABI compiled into the selected FFT target.
+NPY_NO_EXPORT void NPY_CPU_DISPATCH_CURFX(duccfft_diagnostic_simd)(int *info)
+{
+    info[0] = static_cast<int>(DUCC0_NAMESPACE::native_simd<float>::size());
+    info[1] = static_cast<int>(DUCC0_NAMESPACE::native_simd<double>::size());
+#ifdef __AVX512F__
+    info[2] = 1;
+#else
+    info[2] = 0;
+#endif
+#ifdef __AVX2__
+    info[3] = 1;
+#else
+    info[3] = 0;
+#endif
+#ifdef __SSE2__
+    info[4] = 1;
+#else
+    info[4] = 0;
+#endif
+}

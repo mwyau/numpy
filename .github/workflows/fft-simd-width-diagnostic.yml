@@ -1,0 +1,65 @@
+name: DUCC FFT compile-time SIMD width diagnostic
+
+on:
+  push:
+    branches:
+      - diagnostic/duccfft-simd-width
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Compiler and CPU
+        run: |
+          g++ --version | head -1
+          lscpu | grep -E '^(Model name|Flags):'
+      - name: Install NumPy build dependencies
+        run: python -m pip install --group dev-cli --group test-core
+      - name: Build NumPy with V2 V3 V4
+        run: spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min -Dcpu-dispatch=max
+      - name: Check selected DUCC SIMD width for each runtime target
+        run: |
+          cat > /tmp/check_ducc_width.py <<'PY'
+          import numpy as np
+          from numpy.fft import _duccfft_umath as u
+          from numpy._core._multiarray_umath import __cpu_features__ as features
+          print('Selected target:', u.__duccfft_cpu_dispatch_target__)
+          print('Built targets:', u.__duccfft_cpu_dispatch_targets__)
+          print('Native float lanes:', u.__duccfft_float_lanes__)
+          print('Native double lanes:', u.__duccfft_double_lanes__)
+          print('AVX512F:', u.__duccfft_has_avx512f__)
+          print('AVX2:', u.__duccfft_has_avx2__)
+          print('SSE2:', u.__duccfft_has_sse2__)
+          print('Feature groups:', {k: features.get(k) for k in ['X86_V2','X86_V3','X86_V4']})
+          target = u.__duccfft_cpu_dispatch_target__
+          if target == 'X86_V4':
+              assert u.__duccfft_has_avx512f__ == 1
+              assert u.__duccfft_float_lanes__ >= 8
+          elif target == 'X86_V3':
+              assert u.__duccfft_has_avx2__ == 1
+              assert u.__duccfft_float_lanes__ >= 8
+          elif target.startswith('baseline('):
+              assert u.__duccfft_has_avx512f__ == 0
+              assert u.__duccfft_has_avx2__ == 0
+          assert u.__duccfft_double_lanes__ * 2 == u.__duccfft_float_lanes__
+          PY
+          echo '======= V2 ======='
+          NPY_DISABLE_CPU_FEATURES=X86_V4,X86_V3 spin python /tmp/check_ducc_width.py
+          echo '======= V3 ======='
+          NPY_DISABLE_CPU_FEATURES=X86_V4 spin python /tmp/check_ducc_width.py
+          echo '======= highest supported ======='
+          spin python /tmp/check_ducc_width.py
+      - name: Check FFT correctness
+        run: spin test numpy/fft/tests/test_duccfft.py numpy/fft/tests/test_native_nd_experiment.py -- --timeout=600

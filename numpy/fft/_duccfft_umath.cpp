@@ -59,6 +59,9 @@ NPY_CPU_DISPATCH_DECLARE(
     NPY_NO_EXPORT void duccfft_native_nd_float, DUCCFFT_ND_SIGNATURE)
 #undef DUCCFFT_ND_SIGNATURE
 
+NPY_CPU_DISPATCH_DECLARE(
+    NPY_NO_EXPORT void duccfft_diagnostic_simd, (int *))
+
 static void
 wrap_cpp_ufunc(duccfft_loop implementation, char **args,
                npy_intp const *dimensions, npy_intp const *steps,
@@ -365,6 +368,18 @@ _duccfft_umath_exec(PyObject *m)
     duccfft_irfft_float_ptr = NPY_CPU_DISPATCH_CALL(duccfft_irfft_float);
     duccfft_native_nd_double_ptr = NPY_CPU_DISPATCH_CALL(duccfft_native_nd_double);
     duccfft_native_nd_float_ptr = NPY_CPU_DISPATCH_CALL(duccfft_native_nd_float);
+
+    // Diagnostic-only: report the actual C++ SIMD width and compile-time ISA
+    // of the selected target, rather than trusting the dispatch target name.
+    int lane_info[5] = {};
+    NPY_CPU_DISPATCH_CALL(duccfft_diagnostic_simd)(lane_info);
+    if (PyModule_AddIntConstant(m, "__duccfft_float_lanes__", lane_info[0]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_double_lanes__", lane_info[1]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_has_avx512f__", lane_info[2]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_has_avx2__", lane_info[3]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_has_sse2__", lane_info[4]) < 0) {
+        return -1;
+    }
 
     if (add_gufuncs(PyModule_GetDict(m)) < 0) {
         return -1;
