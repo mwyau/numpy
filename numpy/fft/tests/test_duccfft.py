@@ -1,11 +1,161 @@
+import os
 import queue
+import sys
 import threading
 
 import pytest
 
 import numpy as np
+from numpy._core._multiarray_umath import __cpu_features__
+from numpy.fft import _duccfft_umath
 from numpy.random import random
-from numpy.testing import IS_WASM, assert_allclose, assert_array_equal, assert_raises
+from numpy.testing import (
+    HAS_SUBPROCESSES,
+    IS_WASM,
+    assert_allclose,
+    assert_array_equal,
+    assert_raises,
+)
+from numpy.testing._private.utils import run_subprocess
+
+
+def _duccfft_dispatch_targets():
+    """Return compiled FFT targets from highest interest to baseline."""
+    return _duccfft_umath.__duccfft_cpu_dispatch_targets__.split()
+
+
+def _dispatch_target_name(target):
+    return target.split("(", 1)[0]
+
+
+def _run_fft_dispatch_check(env, expected_target=None):
+    env.pop("DUCCFFT_EXPECTED_TARGET", None)
+    if expected_target is not None:
+        env["DUCCFFT_EXPECTED_TARGET"] = expected_target
+    run_subprocess(
+        [
+            sys.executable,
+            "-c",
+            """
+import os
+import numpy as np
+from numpy.fft import _duccfft_umath
+from numpy._core._multiarray_umath import __cpu_features__
+
+available = _duccfft_umath.__duccfft_cpu_dispatch_targets__.split()
+selected = _duccfft_umath.__duccfft_cpu_dispatch_target__
+expected = os.environ.get("DUCCFFT_EXPECTED_TARGET")
+if expected is None:
+    expected = next(
+        target for target in available
+        if target.startswith("baseline(")
+        or __cpu_features__.get(target, False)
+    )
+assert selected == expected, (selected, expected, available)
+disabled = os.environ.get("DUCCFFT_DISABLED_TARGETS", "").split(",")
+for target in filter(None, disabled):
+    assert not __cpu_features__[target], (target, __cpu_features__[target])
+
+x = np.array([1., 2., 3., 4.])
+expected_fft = np.array([10., -2. + 2.j, -2., -2. - 2.j])
+np.testing.assert_allclose(np.fft.fft(x), expected_fft)
+np.testing.assert_allclose(np.fft.ifft(expected_fft), x)
+np.testing.assert_allclose(np.fft.irfft(np.fft.rfft(x), n=4), x)
+
+for dtype in (np.complex64, np.complex128):
+    x = (np.arange(8, dtype=np.float32)
+         + 1j * np.arange(8, dtype=np.float32)[::-1]).astype(dtype)
+    spectrum = np.fft.fft(x)
+    assert spectrum.dtype == dtype
+    recovered = np.fft.ifft(spectrum)
+    assert recovered.dtype == dtype
+    tolerance = 1e-6 if dtype is np.complex64 else 1e-12
+    np.testing.assert_allclose(recovered, x, rtol=tolerance, atol=tolerance)
+
+for dtype in (np.float32, np.float64):
+    tolerance = 1e-6 if dtype is np.float32 else 1e-12
+    for n in (7, 8):
+        x = np.arange(n, dtype=dtype)
+        spectrum = np.fft.rfft(x)
+        expected_dtype = np.complex64 if dtype is np.float32 else np.complex128
+        assert spectrum.dtype == expected_dtype
+        recovered = np.fft.irfft(spectrum, n=n)
+        assert recovered.dtype == dtype
+        np.testing.assert_allclose(
+            recovered, x, rtol=tolerance, atol=tolerance
+        )
+""",
+        ],
+        env=env,
+    )
+
+
+@pytest.mark.skipif(
+    not HAS_SUBPROCESSES,
+    reason="platform cannot start subprocesses",
+)
+def test_fft_automatic_cpu_dispatch():
+    env = os.environ.copy()
+    env.pop("NPY_ENABLE_CPU_FEATURES", None)
+    env.pop("NPY_DISABLE_CPU_FEATURES", None)
+    env.pop("DUCCFFT_DISABLED_TARGETS", None)
+    _run_fft_dispatch_check(env)
+
+
+@pytest.mark.skipif(
+    not HAS_SUBPROCESSES,
+    reason="platform cannot start subprocesses",
+)
+def test_fft_baseline_cpu_dispatch():
+    targets = [
+        _dispatch_target_name(target)
+        for target in _duccfft_dispatch_targets()
+        if not target.startswith("baseline(")
+    ]
+    env = os.environ.copy()
+    env.pop("NPY_ENABLE_CPU_FEATURES", None)
+    env.pop("NPY_DISABLE_CPU_FEATURES", None)
+    env.pop("DUCCFFT_DISABLED_TARGETS", None)
+    if targets:
+        env["NPY_DISABLE_CPU_FEATURES"] = ",".join(targets)
+        env["DUCCFFT_DISABLED_TARGETS"] = ",".join(targets)
+    baseline = next(
+        target for target in _duccfft_dispatch_targets()
+        if target.startswith("baseline(")
+    )
+    _run_fft_dispatch_check(env, baseline)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        _dispatch_target_name(target)
+        for target in _duccfft_dispatch_targets()
+        if not target.startswith("baseline(")
+    ],
+)
+@pytest.mark.skipif(
+    not HAS_SUBPROCESSES,
+    reason="platform cannot start subprocesses",
+)
+def test_fft_forced_cpu_dispatch(target):
+    if not __cpu_features__.get(target, False):
+        pytest.skip(f"CPU does not support DUCC FFT target {target}")
+
+    targets = [
+        _dispatch_target_name(name)
+        for name in _duccfft_dispatch_targets()
+        if not name.startswith("baseline(")
+    ]
+    higher_targets = targets[:targets.index(target)]
+    env = os.environ.copy()
+    env.pop("NPY_ENABLE_CPU_FEATURES", None)
+    env.pop("NPY_DISABLE_CPU_FEATURES", None)
+    env.pop("DUCCFFT_DISABLED_TARGETS", None)
+    if higher_targets:
+        env["NPY_DISABLE_CPU_FEATURES"] = ",".join(higher_targets)
+        env["DUCCFFT_DISABLED_TARGETS"] = ",".join(higher_targets)
+    _run_fft_dispatch_check(env, target)
 
 
 def fft1(x):
@@ -173,6 +323,125 @@ class TestFFT1D:
         result6 = np.fft.fft(y6, axis=axis, out=out6)
         assert result6 is out6
         assert_array_equal(result6, expected1)
+
+    @pytest.mark.parametrize("dtype", [np.complex64, np.complex128,
+                                        np.clongdouble])
+    def test_fft_unaligned_input_and_output(self, dtype):
+        dtype = np.dtype(dtype)
+        n = 8
+        input_storage = bytearray(1 + n * dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=input_storage, offset=1)
+        x[...] = np.arange(n) + 1j * np.arange(n)[::-1]
+
+        output_storage = bytearray(1 + n * dtype.itemsize)
+        out = np.ndarray(n, dtype=dtype, buffer=output_storage, offset=1)
+        expected = np.fft.fft(x.copy())
+        result = np.fft.fft(x, out=out)
+
+        assert not x.flags.aligned
+        assert not out.flags.aligned
+        assert result is out
+        assert_allclose(result, expected)
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64, np.longdouble])
+    def test_rfft_unaligned_input_and_output(self, dtype):
+        dtype = np.dtype(dtype)
+        output_dtype = np.result_type(dtype, 1j)
+        n = 8
+        input_storage = bytearray(1 + n * dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=input_storage, offset=1)
+        x[...] = np.arange(n, dtype=dtype)
+
+        output_storage = bytearray(1 + (n // 2 + 1) * output_dtype.itemsize)
+        out = np.ndarray(n // 2 + 1, dtype=output_dtype,
+                         buffer=output_storage, offset=1)
+        expected = np.fft.rfft(x.copy())
+        result = np.fft.rfft(x, out=out)
+
+        assert not x.flags.aligned
+        assert not out.flags.aligned
+        assert result is out
+        assert_allclose(result, expected)
+
+    def test_rfft_non_element_byte_stride(self):
+        dtype = np.dtype(np.float64)
+        n = 7
+        byte_stride = 12
+        storage = bytearray((n - 1) * byte_stride + dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=storage,
+                       strides=(byte_stride,))
+        x[...] = np.arange(n)
+        expected = np.fft.rfft(np.ascontiguousarray(x))
+        result = np.fft.rfft(x)
+
+        assert x.strides[0] % x.itemsize != 0
+        assert_allclose(result, expected)
+
+    def test_fft_non_element_byte_stride(self):
+        dtype = np.dtype(np.complex128)
+        n = 7
+        byte_stride = 20
+        storage = bytearray((n - 1) * byte_stride + dtype.itemsize)
+        x = np.ndarray(n, dtype=dtype, buffer=storage,
+                       strides=(byte_stride,))
+        x[...] = np.arange(n) + 1j * np.arange(n)[::-1]
+        expected = np.fft.fft(np.ascontiguousarray(x))
+        result = np.fft.fft(x)
+
+        assert x.strides[0] % x.itemsize != 0
+        assert_allclose(result, expected)
+
+    def test_rfft_overlapping_out(self):
+        base = np.arange(6, dtype=np.float64)
+        x = base[:4]
+        out = base.view(np.complex128)[:3]
+        expected = np.fft.rfft(x.copy())
+        result = np.fft.rfft(x, out=out)
+
+        assert np.shares_memory(x, out)
+        assert result is out
+        assert_allclose(result, expected)
+
+    def test_irfft_overlapping_out(self):
+        n = 6
+        storage = bytearray(4 * np.dtype(np.complex128).itemsize)
+        x = np.ndarray(n // 2 + 1, dtype=np.complex128,
+                       buffer=storage, offset=0)
+        out = np.ndarray(n, dtype=np.float64, buffer=storage, offset=0)
+        x[...] = np.arange(x.size) + 1j * np.arange(x.size)[::-1]
+        expected = np.fft.irfft(x.copy(), n=n)
+        result = np.fft.irfft(x, n=n, out=out)
+
+        assert np.shares_memory(x, out)
+        assert result is out
+        assert_allclose(result, expected)
+
+    def test_fft_overlapping_outer_rows(self):
+        n = 8
+        storage = np.arange(3 * n, dtype=np.complex128).reshape(3, n)
+        x = storage[:2]
+        out = storage[1:]
+        expected = np.fft.fft(x.copy(), axis=-1)
+        result = np.fft.fft(x, axis=-1, out=out)
+
+        assert np.shares_memory(x, out)
+        assert result is out
+        assert_allclose(result, expected)
+
+    @pytest.mark.parametrize(
+        "function, input_dtype, input_size, output_shape, output_dtype", [
+        (np.fft.fft, np.complex64, 8, (0, 8), np.complex64),
+        (np.fft.rfft, np.float32, 8, (0, 5), np.complex64),
+        (np.fft.irfft, np.complex64, 5, (0, 8), np.float32),
+    ])
+    def test_zero_sized_outer_dimension(self, function, input_dtype, input_size,
+                                        output_shape, output_dtype):
+        x = np.empty((0, input_size),
+                     dtype=input_dtype)
+        result = function(x, axis=-1)
+
+        assert result.shape == output_shape
+        assert result.dtype == output_dtype
 
     def test_fft_bad_out(self):
         x = np.arange(30.)
@@ -573,6 +842,25 @@ class TestFFTThreadSafe:
     def test_irfft(self):
         a = np.ones(self.input_shape) * 1 + 0j
         self._test_mtsame(np.fft.irfft, a)
+
+    def test_fft_concurrent_plan_cache_misses(self):
+        lengths = [257, 263, 269, 271, 277, 281, 283, 293]
+        inputs = [random(n) + 1j * random(n) for n in lengths]
+        results = queue.Queue()
+
+        def worker(index, x):
+            results.put((index, np.fft.ifft(np.fft.fft(x))))
+
+        threads = [threading.Thread(target=worker, args=(i, x))
+                   for i, x in enumerate(inputs)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        returned = dict(results.get(timeout=5) for _ in inputs)
+        for i, x in enumerate(inputs):
+            assert_allclose(returned[i], x, atol=1e-12, rtol=1e-12)
 
 
 def test_irfft_with_n_1_regression():

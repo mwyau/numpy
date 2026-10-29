@@ -1,0 +1,7 @@
+Faster FFTs on x86-64
+---------------------
+``numpy.fft`` now uses DUCC's FFT kernels for one- and multi-dimensional
+transforms. On x86-64, NumPy's runtime CPU dispatch selects a compiled
+implementation supported by the processor and operating system. The public
+API and extended-precision support are preserved, with measured improvements
+in several batched workloads.

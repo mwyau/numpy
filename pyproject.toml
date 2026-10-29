@@ -55,7 +55,7 @@ license-files = [
     'numpy/_core/src/multiarray/dragon4_LICENSE.txt',    # MIT
     'numpy/_core/src/npysort/x86-simd-sort/LICENSE.md',  # BSD-3-Clause
     'numpy/_core/src/umath/svml/LICENSE',                # BSD-3-Clause
-    'numpy/fft/pocketfft/LICENSE.md',                    # BSD-3-Clause
+    'numpy/fft/ducc0/LICENSE.md',                     # BSD-3-Clause (DUCC/FFTW); Apache-2.0 helper
     'numpy/ma/LICENSE',                                  # BSD-3-Clause
     'numpy/linalg/lapack_lite/LICENSE.txt',              # BSD-3-Clause
     'numpy/random/LICENSE.md',                           # BSD-3-Clause
