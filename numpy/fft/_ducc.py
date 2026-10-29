@@ -32,7 +32,6 @@ __all__ = ['fft', 'ifft', 'rfft', 'irfft', 'hfft', 'ihfft', 'rfftn',
 
 import functools
 import math
-import os
 import warnings
 
 from numpy._core import (
@@ -50,9 +49,6 @@ from numpy._core import (
 from numpy.lib.array_utils import normalize_axis_index
 
 from . import _duccfft_umath as duccfft
-
-# This branch opts into the native-ND experiment unless explicitly disabled.
-_NATIVE_ND_ENABLED = os.environ.get("NPY_DUCCFFT_NATIVE_ND", "1") != "0"
 
 array_function_dispatch = functools.partial(
     overrides.array_function_dispatch, module='numpy.fft')
@@ -729,12 +725,10 @@ def _cook_nd_args(a, s=None, axes=None, invreal=0):
 def _try_native_c2c_nd(a, s, axes, function, norm, out):
     """Native multi-axis DUCC path for contiguous C2C without resizing.
 
-    Cases requiring NumPy's exact sequential semantics retain the gufunc loop,
-    including repeated axes, noncontiguous arrays, out=, and padding/cropping.
+    Cases requiring NumPy's sequential-axis semantics retain the gufunc loop,
+    including repeated axes, noncontiguous inputs, and resizing.
     """
-    if not _NATIVE_ND_ENABLED or (
-        function is not fft and function is not ifft
-    ):
+    if function is not fft and function is not ifft:
         return None
     if (a.ndim < 2 or len(axes) < 2 or
         a.dtype not in (complex64, complex128) or

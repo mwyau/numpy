@@ -18,7 +18,7 @@ defaults:
 
 jobs:
   fft-dispatch:
-    name: Compare cache-off native ND V2/V3/V4, legacy ND, and PocketFFT
+    name: Compare cache-off native ND V2/V3/V4 and PocketFFT
     runs-on: ubuntu-26.04
     timeout-minutes: 180
     # Ubuntu's hosted C++ compiler may default to x86-64-v3/AVX2.
@@ -136,23 +136,6 @@ jobs:
           echo "$status" > "$RUNNER_TEMP/fft-dispatch-x86_v3/exit-code.txt"
           exit "$status"
 
-      - name: Run legacy multi-axis X86_V3 profile (cache off)
-        id: legacy_v3
-        continue-on-error: true
-        env:
-          ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ github.run_attempt }}
-          NPY_DISABLE_CPU_FEATURES: X86_V4
-          DUCCFFT_ASV_EXPECTED_TARGET: X86_V3
-          NPY_DUCCFFT_NATIVE_ND: "0"
-        run: |
-          mkdir -p "$RUNNER_TEMP/fft-dispatch-legacy_v3"
-          set +e
-          taskset -c "$FFT_BENCH_CPU" spin python .github/scripts/fft_dispatch_bench.py run LEGACY_V3 \
-            2>&1 | tee "$RUNNER_TEMP/fft-dispatch-legacy_v3/run.log"
-          status=${PIPESTATUS[0]}
-          echo "$status" > "$RUNNER_TEMP/fft-dispatch-legacy_v3/exit-code.txt"
-          exit "$status"
-
       - name: Run strict X86_V4 profile
         id: v4
         continue-on-error: true
@@ -231,7 +214,6 @@ jobs:
           INSTALL_STEP_OUTCOME: ${{ steps.install.outcome }}
           FFT_TEST_STEP_OUTCOME: ${{ steps.fft_tests.outcome }}
           NATIVE_ND_TEST_STEP_OUTCOME: ${{ steps.native_tests.outcome }}
-          LEGACY_V3_STEP_OUTCOME: ${{ steps.legacy_v3.outcome }}
           HOST_STEP_OUTCOME: ${{ steps.host.outcome }}
           ASV_MACHINE_STEP_OUTCOME: ${{ steps.asv_machine.outcome }}
           X86_V2_STEP_OUTCOME: ${{ steps.v2.outcome }}
@@ -258,14 +240,6 @@ jobs:
         with:
           name: fft-dispatch-v3
           path: ${{ runner.temp }}/fft-dispatch-x86_v3/
-          if-no-files-found: warn
-
-      - name: Upload legacy ND V3 reference measurements
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: fft-dispatch-legacy-v3
-          path: ${{ runner.temp }}/fft-dispatch-legacy_v3/
           if-no-files-found: warn
 
       - name: Upload V4 results and diagnostics

@@ -23,13 +23,12 @@ from pathlib import Path
 ROOT = Path(os.environ.get("FFT_BENCH_ROOT", Path(__file__).resolve().parents[2])).resolve()
 BENCH_FILTER = r"^bench_fft\."
 TARGETS = ("X86_V2", "X86_V3", "X86_V4")
-PROFILES = TARGETS + ("POCKETFFT", "LEGACY_V3")
+PROFILES = TARGETS + ("POCKETFFT",)
 # Non-quick ASV: 14 samples over two rounds, with per-case warmup.
 TIMING_ATTRIBUTES = {"warmup_time": 0.15, "repeat": 7, "rounds": 2}
 PROFILE_MASKS = {
     "X86_V2": "X86_V4,X86_V3",
     "X86_V3": "X86_V4",
-    "LEGACY_V3": "X86_V4",
     "X86_V4": "",
 }
 RELEVANT_FLAGS = {
@@ -262,7 +261,7 @@ def assert_profile(profile: str, host: dict, features, report: dict) -> str:
     compiled = report["compiled_targets"]
     selected = report["selected_target"]
 
-    if profile in ("X86_V3", "LEGACY_V3"):
+    if profile == "X86_V3":
         if not host.get("cpu_feature_groups", {}).get("X86_V3", False):
             raise RuntimeError(
                 "Runner does not expose X86_V3 CPU features; the V3 benchmark "
@@ -746,61 +745,6 @@ def render_pocketfft_comparison() -> tuple[str, str, dict]:
 
 
 
-def render_native_nd_comparison() -> tuple[str, str, dict]:
-    """Compare native and legacy ND paths on identical V3 CPU dispatch."""
-    native_file = artifact_path("X86_V3") / "asv-results.json"
-    legacy_file = artifact_path("LEGACY_V3") / "asv-results.json"
-    header = "benchmark\tparameters\tnative_v3_us\tlegacy_v3_us\tlegacy_over_native"
-    if not native_file.exists() or not legacy_file.exists():
-        return ("## Native versus legacy ND (V3)\n\nOne of the V3 profiles is missing.\n",
-                header + "\n", {"status": "missing"})
-    native = json.loads(native_file.read_text())
-    legacy = json.loads(legacy_file.read_text())
-    def group(payload):
-        return {(r["benchmark"], tuple(r["parameters"])): r
-                for r in payload["cases"]}
-    nrows, lrows = group(native), group(legacy)
-    rows = [header]
-    grouped = {}
-    for key in sorted(set(nrows) & set(lrows)):
-        name, params = key
-        if not name.startswith("bench_fft.FFTND."):
-            continue
-        n, l = nrows[key], lrows[key]
-        tn, tl = n.get("asv_value"), l.get("asv_value")
-        if (n.get("status") != "completed" or l.get("status") != "completed"
-                or not isinstance(tn, (int, float))
-                or not isinstance(tl, (int, float))
-                or not math.isfinite(tn) or not math.isfinite(tl)
-                or tn <= 0 or tl <= 0):
-            continue
-        ratio = float(tl) / float(tn)
-        grouped.setdefault(name, []).append(ratio)
-        rows.append("\t".join([
-            name, ", ".join(params), f"{tn*1e6:.6f}",
-            f"{tl*1e6:.6f}", f"{ratio:.6f}",
-        ]))
-    ratios = [x for values in grouped.values() for x in values]
-    geo = math.exp(statistics.fmean(math.log(x) for x in ratios)) if ratios else None
-    summary = {"matched_nd_cases": len(ratios), "geometric_mean_legacy_over_native": geo,
-               "faster_native_cases": sum(x > 1 for x in ratios)}
-    md = [
-        "## Native versus legacy multi-axis FFT (both X86_V3)",
-        "",
-        "**Ratio = legacy-ND time / native-ND time**; greater than 1.00x favors native ND.",
-        "Both variants use the same cache-disabled NumPy DUCC build. The legacy profile",
-        "sets NPY_DUCCFFT_NATIVE_ND=0. Only complex FFTND cases are compared.",
-        "",
-        f"Matched ND cases: {len(ratios)}; geometric mean: "
-        + (f"{geo:.3f}x" if geo is not None else "unavailable")
-        + f"; native faster: {summary['faster_native_cases']}/{len(ratios)}.",
-        "",
-        "Full results in fft-native-nd-comparison.tsv.",
-        "",
-    ]
-    return "\n".join(md), "\n".join(rows) + "\n", summary
-
-
 def summarize() -> int:
     runner_temp = Path(os.environ.get("RUNNER_TEMP", "/tmp"))
     summary_file = Path(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null"))
@@ -886,16 +830,13 @@ def summarize() -> int:
     ])
     perf_markdown, timing_tsv, timing_summary = render_performance_report()
     pocket_markdown, pocket_tsv, pocket_summary = render_pocketfft_comparison()
-    native_markdown, native_tsv, native_summary = render_native_nd_comparison()
-    content += "\n\n" + perf_markdown + "\n\n" + pocket_markdown + "\n\n" + native_markdown
+    content += "\n\n" + perf_markdown + "\n\n" + pocket_markdown
     diagnostic_dir = artifact_path("diagnostics")
     (diagnostic_dir / "FFT_DISPATCH_REPORT.md").write_text(content + "\n")
     (diagnostic_dir / "fft-dispatch-timings.tsv").write_text(timing_tsv)
     write_json(diagnostic_dir / "fft-dispatch-comparison.json", timing_summary)
     (diagnostic_dir / "fft-pocketfft-comparison.tsv").write_text(pocket_tsv)
     write_json(diagnostic_dir / "fft-pocketfft-comparison.json", pocket_summary)
-    (diagnostic_dir / "fft-native-nd-comparison.tsv").write_text(native_tsv)
-    write_json(diagnostic_dir / "fft-native-nd-comparison.json", native_summary)
     print(content)
     if summary_file != Path("/dev/null"):
         with summary_file.open("a") as handle:
@@ -905,7 +846,7 @@ def summarize() -> int:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: fft_dispatch_bench.py host | run X86_V2|X86_V3|X86_V4|POCKETFFT|LEGACY_V3 | summary", file=sys.stderr)
+        print("usage: fft_dispatch_bench.py host | run X86_V2|X86_V3|X86_V4|POCKETFFT | summary", file=sys.stderr)
         return 2
     command = sys.argv[1]
     if command == "host":
