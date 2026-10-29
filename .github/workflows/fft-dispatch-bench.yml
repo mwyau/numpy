@@ -21,6 +21,13 @@ jobs:
     name: Compare cache-off native ND V2/V3/V4, legacy ND, and PocketFFT
     runs-on: ubuntu-26.04
     timeout-minutes: 180
+    # Ubuntu's hosted C++ compiler may default to x86-64-v3/AVX2.
+    # SSE-only -m flags do not disable those defaults. Force a real V2
+    # baseline for both the DUCC and PocketFFT builds; NumPy adds the
+    # requested V3/V4 compiler features to its multi-target objects.
+    env:
+      CFLAGS: -march=x86-64-v2
+      CXXFLAGS: -march=x86-64-v2
     steps:
       - name: Checkout test branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
