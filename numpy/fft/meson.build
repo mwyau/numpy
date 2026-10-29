@@ -16,7 +16,29 @@ duccfft_sources = [
   'ducc0/infra/threading.cc',
 ]
 
-duccfft_dispatch_cpp_args = largefile_define + duccfft_args + max_opt
+# NumPy's per-target x86 -m flags *enable* features, but do not disable
+# features that the compiler enables by default.  For example, GCC 15 on
+# Ubuntu 26.04 defaults to x86-64-v3; adding -msse4.2 still emits AVX2 code
+# for an X86_V2 baseline.  Explicitly establish the requested baseline ISA
+# before multi_targets() adds the higher-target feature flags.  Apply the
+# same baseline to the non-dispatched extension and shared DUCC support code.
+duccfft_baseline_c_args = []
+duccfft_baseline_cpp_args = []
+if host_machine.cpu_family() == 'x86_64' and cpp.get_id() in ['gcc', 'clang']
+  duccfft_baseline_arch = 'x86-64'
+  if 'X86_V4' in CPU_BASELINE_NAMES
+    duccfft_baseline_arch = 'x86-64-v4'
+  elif 'X86_V3' in CPU_BASELINE_NAMES
+    duccfft_baseline_arch = 'x86-64-v3'
+  elif 'X86_V2' in CPU_BASELINE_NAMES
+    duccfft_baseline_arch = 'x86-64-v2'
+  endif
+  duccfft_baseline_arg = '-march=' + duccfft_baseline_arch
+  duccfft_baseline_c_args = cc.get_supported_arguments(duccfft_baseline_arg)
+  duccfft_baseline_cpp_args = cpp.get_supported_arguments(duccfft_baseline_arg)
+endif
+
+duccfft_dispatch_cpp_args = largefile_define + duccfft_args + max_opt + duccfft_baseline_cpp_args
 duccfft_dispatch_cpp_args += cpp.get_supported_arguments('-fvisibility=hidden')
 
 # Compile the FFT implementation once for each NumPy CPU target.  The
@@ -40,8 +62,8 @@ py.extension_module('_duccfft_umath',
   # as the _simd extension does, rather than depending on _multiarray_umath.
   ['_duccfft_umath.cpp', '../_core/src/common/npy_cpu_features.c']
     + duccfft_sources,
-  c_args: c_args_common + largefile_define,
-  cpp_args: largefile_define + duccfft_args,
+  c_args: c_args_common + largefile_define + duccfft_baseline_c_args,
+  cpp_args: largefile_define + duccfft_args + duccfft_baseline_cpp_args,
   include_directories: include_directories('ducc0'),
   dependencies: np_core_dep,
   link_with: duccfft_dispatch.static_lib('_duccfft_dispatch'),
