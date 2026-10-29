@@ -277,6 +277,4 @@ jobs:
             ${{ runner.temp }}/fft-dispatch-diagnostics/fft-dispatch-comparison.json
             ${{ runner.temp }}/fft-dispatch-diagnostics/fft-pocketfft-comparison.tsv
             ${{ runner.temp }}/fft-dispatch-diagnostics/fft-pocketfft-comparison.json
-            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-native-nd-comparison.tsv
-            ${{ runner.temp }}/fft-dispatch-diagnostics/fft-native-nd-comparison.json
           if-no-files-found: warn

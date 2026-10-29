@@ -34,7 +34,7 @@ def _random_complex(shape, dtype):
 
 class FFT1D(Benchmark):
     params = [
-        [32, 100, 257, 313, 1000, 1024, 4093, 4094, 4095, 4096, 4097,
+        [32, 100, 257, 313, 1000, 1013, 1024, 2047, 2048, 4093, 4094, 4095, 4096, 4097,
          6144, 65536],
         ['complex64', 'complex128'],
         ['fft', 'ifft'],
@@ -52,7 +52,7 @@ class FFT1D(Benchmark):
 
 class RealFFT1D(Benchmark):
     params = [
-        [7, 32, 100, 313, 1000, 1023, 1024, 4095, 4096, 4097],
+        [7, 32, 100, 313, 1000, 1013, 1023, 1024, 2047, 2048, 4095, 4096, 4097],
         ['float32', 'float64'],
         ['rfft', 'irfft'],
     ]
@@ -71,9 +71,11 @@ class RealFFT1D(Benchmark):
 
 
 class FFTBatched(Benchmark):
+    # Issue mreineck/ducc#62: explore SIMD working-set and critical-stride
+    # transitions with equal-size prime/odd and radix-friendly lengths.
     params = [
         [1, 2, 4, 8, 16, 64],
-        [4095, 4096],
+        [256, 257, 1013, 1024, 2047, 2048, 4095, 4096],
         ['complex64', 'complex128'],
     ]
     param_names = ['batch', 'size', 'dtype']
@@ -86,10 +88,33 @@ class FFTBatched(Benchmark):
         np.fft.fft(self.x, axis=-1)
 
 
+class FFTBatchedLayout(Benchmark):
+    """Measure contiguous versus strided last-axis FFT execution.
+
+    Identical 64-row input is timed in C and Fortran layouts, to expose
+    differences in DUCC's stride-aware SIMD batching decisions.
+    """
+
+    params = [
+        [1013, 1024, 2047, 2048, 4095, 4096],
+        ['complex64', 'complex128'],
+        ['C', 'F'],
+    ]
+    param_names = ['size', 'dtype', 'order']
+
+    def setup(self, size, dtype, order):
+        _check_cpu_target()
+        data = _random_complex((64, size), dtype)
+        self.x = data if order == 'C' else np.asfortranarray(data)
+
+    def time_fft(self, size, dtype, order):
+        np.fft.fft(self.x, axis=-1)
+
+
 class RealFFTBatched(Benchmark):
     params = [
         [1, 4, 16, 64],
-        [4095, 4096],
+        [256, 257, 1013, 1024, 2047, 2048, 4095, 4096],
         ['rfft', 'irfft'],
     ]
     param_names = ['batch', 'size', 'operation']

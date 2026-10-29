@@ -22,6 +22,9 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("FFT_BENCH_ROOT", Path(__file__).resolve().parents[2])).resolve()
 BENCH_FILTER = r"^bench_fft\."
+# 64 FFT1D + 52 RealFFT1D + 96 FFTBatched + 24 FFTBatchedLayout
+# + 64 RealFFTBatched + 58 other cases.
+EXPECTED_FFT_CASES = 358
 TARGETS = ("X86_V2", "X86_V3", "X86_V4")
 PROFILES = TARGETS + ("POCKETFFT",)
 # Non-quick ASV: 14 samples over two rounds, with per-case warmup.
@@ -434,9 +437,9 @@ def run_profile(profile: str) -> int:
             discovered = count_cases(benchmarks)
             data["collected_cases"] = discovered
             print(f"ASV discovered {discovered} FFT parameter cases.")
-            if discovered != 190:
+            if discovered != EXPECTED_FFT_CASES:
                 raise RuntimeError(
-                    f"ASV discovered {discovered} cases, expected all 190."
+                    f"ASV discovered {discovered} cases, expected {EXPECTED_FFT_CASES}."
                 )
             benchmark_started = time.monotonic()
             result = native_run_benchmarks(benchmarks, environment, **kwargs)
@@ -486,9 +489,9 @@ def run_profile(profile: str) -> int:
             data["failure_category"] = "benchmark-execution"
         elif not captured:
             return_code = 1
-        elif data["completed_cases"] != 190 or data["failed_cases"] or data["skipped_cases"]:
+        elif data["completed_cases"] != EXPECTED_FFT_CASES or data["failed_cases"] or data["skipped_cases"]:
             data["error"] = (
-                "ASV case totals did not show 190 completed cases with no "
+                f"ASV case totals did not show {EXPECTED_FFT_CASES} completed cases with no "
                 "failures or skips."
             )
             data["failure_category"] = "benchmark-execution"
@@ -684,6 +687,8 @@ def render_pocketfft_comparison() -> tuple[str, str, dict]:
 
     ratios = {mode: [] for mode in TARGETS}
     grouped = {}
+    per_length = {}
+    per_layout = {}
     table = [header]
     for key in sorted(ref_rows):
         name, params = key
@@ -694,14 +699,23 @@ def render_pocketfft_comparison() -> tuple[str, str, dict]:
                f"{base * 1e6:.6f}" if base is not None else ""]
         row += [f"{timings[mode] * 1e6:.6f}" if timings[mode] is not None else ""
                 for mode in TARGETS]
+        cls = name.split(".")[1] if "." in name else name
+        if cls == "FFTBatchedLayout":
+            key_layout = (int(params[0]), params[1])
+            layout = params[2].replace("'", "").replace('"', "")
+            per_layout.setdefault(key_layout, {}).setdefault("POCKETFFT", {})[layout] = base
+            for target in TARGETS:
+                per_layout.setdefault(key_layout, {}).setdefault(target, {})[layout] = timings[target]
         for mode in TARGETS:
             other = timings[mode]
             speedup = base / other if base is not None and other is not None else None
             row.append(f"{speedup:.6f}" if speedup is not None else "")
             if speedup is not None:
                 ratios[mode].append(speedup)
-                group = name.split(".")[1] if "." in name else name
-                grouped.setdefault(group, {}).setdefault(mode, []).append(speedup)
+                grouped.setdefault(cls, {}).setdefault(mode, []).append(speedup)
+                if cls in ("FFTBatched", "RealFFTBatched", "FFTBatchedLayout"):
+                    length = int(params[0] if cls == "FFTBatchedLayout" else params[1])
+                    per_length.setdefault((cls, length), {}).setdefault(mode, []).append(speedup)
         table.append("\t".join(row))
 
     def geo(numbers):
@@ -715,7 +729,7 @@ def render_pocketfft_comparison() -> tuple[str, str, dict]:
         "## DUCC versus PocketFFT from NumPy main",
         "",
         f"PocketFFT reference commit: {ref_sha}. Both builds use the same "
-        "190-case benchmark file and pinned CPU on the same GitHub runner.",
+        f"{EXPECTED_FFT_CASES}-case benchmark file and pinned CPU on the same GitHub runner.",
         "**Speedup = PocketFFT seconds / DUCC seconds** (>1 means DUCC faster).",
         "",
         "| DUCC mode | Cases | Geometric mean | Median | DUCC faster |",
@@ -739,8 +753,49 @@ def render_pocketfft_comparison() -> tuple[str, str, dict]:
         report.append("| " + name + " | " + " | ".join(
             show(geo(modes.get(mode, []))) for mode in TARGETS
         ) + " |")
-    report += ["", "Full per-case measurements are included in the PocketFFT TSV artifact.",
-               "Shared-runner frequency and scheduling variability remain possible.", ""]
+    report += [
+        "",
+        "### FFT length sensitivity (PocketFFT / DUCC, geometric mean)",
+        "",
+        "Paired sizes 256/257, 1013/1024, 2047/2048, and 4095/4096",
+        "probe SIMD batching, plan overhead and working-set/stride heuristics.",
+        "DUCC plan caching remains disabled.",
+        "",
+        "| Class | FFT length | V3 cases | V2 | V3 | V4 |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for (cls, length), modes in sorted(per_length.items()):
+        report.append(
+            f"| {cls} | {length} | {len(modes.get('X86_V3', []))} | "
+            + " | ".join(show(geo(modes.get(mode, []))) for mode in TARGETS) + " |"
+        )
+    report += [
+        "",
+        "### FFT layout effect (Fortran-order time / C-order time)",
+        "",
+        "Fortran order makes the transformed last axis strided.",
+        "",
+        "| FFT length | dtype | PocketFFT | DUCC V2 | DUCC V3 | DUCC V4 |",
+        "|---:|---|---:|---:|---:|---:|",
+    ]
+    for (length, dtype), modes in sorted(per_layout.items()):
+        cells = []
+        for mode in ("POCKETFFT", *TARGETS):
+            pair = modes.get(mode, {})
+            c_time, f_time = pair.get("C"), pair.get("F")
+            ratio = (
+                f_time / c_time
+                if c_time is not None and f_time is not None and c_time > 0
+                else None
+            )
+            cells.append(show(ratio))
+        report.append(f"| {length} | {dtype} | " + " | ".join(cells) + " |")
+    report += [
+        "",
+        "Full per-case measurements are included in the PocketFFT TSV artifact.",
+        "Shared-runner frequency and scheduling variability remain possible.",
+        "",
+    ]
     return "\n".join(report), "\n".join(table) + "\n", summary
 
 
