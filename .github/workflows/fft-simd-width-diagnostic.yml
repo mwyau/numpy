@@ -13,6 +13,11 @@ jobs:
   inspect:
     runs-on: ubuntu-26.04
     timeout-minutes: 75
+    # GCC on these runners defaults to AVX2. Force a real x86-64-v2
+    # baseline before NumPy's multi-target feature flags are appended.
+    env:
+      CFLAGS: -march=x86-64-v2
+      CXXFLAGS: -march=x86-64-v2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +55,12 @@ jobs:
           print('FFT c2c selected symbol:', u.__duccfft_c2c_symbol__)
           print('FFT native ND selected symbol:', u.__duccfft_nd_symbol__)
           print('Feature groups:', {k: features.get(k) for k in ['X86_V2','X86_V3','X86_V4']})
+          assert u.__duccfft_baseline_float_lanes__ == 4
+          assert u.__duccfft_baseline_double_lanes__ == 2
+          assert u.__duccfft_baseline_has_avx2__ == 0
+          assert u.__duccfft_v3_float_lanes__ == 8 if features.get('X86_V3') else True
+          assert u.__duccfft_c2c_symbol__ == u.__duccfft_probe_symbol__
+          assert u.__duccfft_nd_symbol__ == u.__duccfft_probe_symbol__
           target = u.__duccfft_cpu_dispatch_target__
           if target == 'X86_V4':
               assert u.__duccfft_has_avx512f__ == 1
@@ -73,11 +84,10 @@ jobs:
                   print(entry['command'])
           PY
           echo '======= V2 ======='
-          NPY_DISABLE_CPU_FEATURES=X86_V4,X86_V3 spin python /tmp/check_ducc_width.py || true
+          NPY_DISABLE_CPU_FEATURES=X86_V4,X86_V3 spin python /tmp/check_ducc_width.py
           echo '======= V3 ======='
-          NPY_DISABLE_CPU_FEATURES=X86_V4 spin python /tmp/check_ducc_width.py || true
+          NPY_DISABLE_CPU_FEATURES=X86_V4 spin python /tmp/check_ducc_width.py
           echo '======= highest supported ======='
-          spin python /tmp/check_ducc_width.py || true
-          echo 'Diagnostic output is non-gating until compiler flag issue is understood.'
+          spin python /tmp/check_ducc_width.py
       - name: Check FFT correctness
         run: spin test numpy/fft/tests/test_duccfft.py numpy/fft/tests/test_native_nd_experiment.py -- --timeout=600
