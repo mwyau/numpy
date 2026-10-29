@@ -371,14 +371,39 @@ _duccfft_umath_exec(PyObject *m)
 
     // Diagnostic-only: report the actual C++ SIMD width and compile-time ISA
     // of the selected target, rather than trusting the dispatch target name.
-    int lane_info[5] = {};
+    int lane_info[5] = {}, baseline_info[5] = {}, v3_info[5] = {};
     auto simd_probe = NPY_CPU_DISPATCH_CALL(duccfft_diagnostic_simd);
     simd_probe(lane_info);
+    // Call the actual target symbols directly, without CPU dispatch.
+    duccfft_diagnostic_simd(baseline_info);
+    if (NPY_CPU_HAVE(X86_V3)) {
+        duccfft_diagnostic_simd_X86_V3(v3_info);
+    }
+    const char *probe_symbol =
+        simd_probe == &duccfft_diagnostic_simd ? "baseline" :
+        simd_probe == &duccfft_diagnostic_simd_X86_V3 ? "X86_V3" :
+        simd_probe == &duccfft_diagnostic_simd_X86_V4 ? "X86_V4" : "unknown";
+    const char *c2c_symbol =
+        duccfft_c2c_double_ptr == &duccfft_c2c_double ? "baseline" :
+        duccfft_c2c_double_ptr == &duccfft_c2c_double_X86_V3 ? "X86_V3" :
+        duccfft_c2c_double_ptr == &duccfft_c2c_double_X86_V4 ? "X86_V4" : "unknown";
+    const char *nd_symbol =
+        duccfft_native_nd_double_ptr == &duccfft_native_nd_double ? "baseline" :
+        duccfft_native_nd_double_ptr == &duccfft_native_nd_double_X86_V3 ? "X86_V3" :
+        duccfft_native_nd_double_ptr == &duccfft_native_nd_double_X86_V4 ? "X86_V4" : "unknown";
     if (PyModule_AddIntConstant(m, "__duccfft_float_lanes__", lane_info[0]) < 0 ||
         PyModule_AddIntConstant(m, "__duccfft_double_lanes__", lane_info[1]) < 0 ||
         PyModule_AddIntConstant(m, "__duccfft_has_avx512f__", lane_info[2]) < 0 ||
         PyModule_AddIntConstant(m, "__duccfft_has_avx2__", lane_info[3]) < 0 ||
-        PyModule_AddIntConstant(m, "__duccfft_has_sse2__", lane_info[4]) < 0) {
+        PyModule_AddIntConstant(m, "__duccfft_has_sse2__", lane_info[4]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_baseline_float_lanes__", baseline_info[0]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_baseline_double_lanes__", baseline_info[1]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_baseline_has_avx2__", baseline_info[3]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_v3_float_lanes__", v3_info[0]) < 0 ||
+        PyModule_AddIntConstant(m, "__duccfft_v3_has_avx2__", v3_info[3]) < 0 ||
+        PyModule_AddStringConstant(m, "__duccfft_probe_symbol__", probe_symbol) < 0 ||
+        PyModule_AddStringConstant(m, "__duccfft_c2c_symbol__", c2c_symbol) < 0 ||
+        PyModule_AddStringConstant(m, "__duccfft_nd_symbol__", nd_symbol) < 0) {
         return -1;
     }
 

@@ -42,6 +42,13 @@ jobs:
           print('AVX512F:', u.__duccfft_has_avx512f__)
           print('AVX2:', u.__duccfft_has_avx2__)
           print('SSE2:', u.__duccfft_has_sse2__)
+          print('Direct baseline float/double lanes:', u.__duccfft_baseline_float_lanes__, u.__duccfft_baseline_double_lanes__)
+          print('Direct baseline AVX2:', u.__duccfft_baseline_has_avx2__)
+          print('Direct V3 float lanes:', u.__duccfft_v3_float_lanes__)
+          print('Direct V3 AVX2:', u.__duccfft_v3_has_avx2__)
+          print('Probe selected symbol:', u.__duccfft_probe_symbol__)
+          print('FFT c2c selected symbol:', u.__duccfft_c2c_symbol__)
+          print('FFT native ND selected symbol:', u.__duccfft_nd_symbol__)
           print('Feature groups:', {k: features.get(k) for k in ['X86_V2','X86_V3','X86_V4']})
           target = u.__duccfft_cpu_dispatch_target__
           if target == 'X86_V4':
