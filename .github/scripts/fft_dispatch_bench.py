@@ -22,9 +22,9 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("FFT_BENCH_ROOT", Path(__file__).resolve().parents[2])).resolve()
 BENCH_FILTER = r"^bench_fft\."
-# 64 FFT1D + 52 RealFFT1D + 96 FFTBatched + 24 FFTBatchedLayout
+# 64 FFT1D + 48 RealFFT1D + 96 FFTBatched + 24 FFTBatchedLayout
 # + 64 RealFFTBatched + 58 other cases.
-EXPECTED_FFT_CASES = 358
+EXPECTED_FFT_CASES = 354
 TARGETS = ("X86_V2", "X86_V3", "X86_V4")
 PROFILES = TARGETS + ("POCKETFFT",)
 # Non-quick ASV: 14 samples over two rounds, with per-case warmup.
@@ -757,7 +757,7 @@ def render_pocketfft_comparison() -> tuple[str, str, dict]:
         "",
         "### FFT length sensitivity (PocketFFT / DUCC, geometric mean)",
         "",
-        "Paired sizes 256/257, 1013/1024, 2047/2048, and 4095/4096",
+        "Paired sizes 256/257, 1023/1024, 2047/2048, and 4095/4096",
         "probe SIMD batching, plan overhead and working-set/stride heuristics.",
         "DUCC plan caching remains disabled.",
         "",

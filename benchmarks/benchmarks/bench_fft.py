@@ -34,7 +34,7 @@ def _random_complex(shape, dtype):
 
 class FFT1D(Benchmark):
     params = [
-        [32, 100, 257, 313, 1000, 1013, 1024, 2047, 2048, 4093, 4094, 4095, 4096, 4097,
+        [32, 100, 257, 313, 1000, 1023, 1024, 2047, 2048, 4093, 4094, 4095, 4096, 4097,
          6144, 65536],
         ['complex64', 'complex128'],
         ['fft', 'ifft'],
@@ -52,7 +52,7 @@ class FFT1D(Benchmark):
 
 class RealFFT1D(Benchmark):
     params = [
-        [7, 32, 100, 313, 1000, 1013, 1023, 1024, 2047, 2048, 4095, 4096, 4097],
+        [7, 32, 100, 313, 1000, 1023, 1024, 2047, 2048, 4095, 4096, 4097],
         ['float32', 'float64'],
         ['rfft', 'irfft'],
     ]
@@ -75,7 +75,7 @@ class FFTBatched(Benchmark):
     # transitions with equal-size prime/odd and radix-friendly lengths.
     params = [
         [1, 2, 4, 8, 16, 64],
-        [256, 257, 1013, 1024, 2047, 2048, 4095, 4096],
+        [256, 257, 1023, 1024, 2047, 2048, 4095, 4096],
         ['complex64', 'complex128'],
     ]
     param_names = ['batch', 'size', 'dtype']
@@ -96,7 +96,7 @@ class FFTBatchedLayout(Benchmark):
     """
 
     params = [
-        [1013, 1024, 2047, 2048, 4095, 4096],
+        [1023, 1024, 2047, 2048, 4095, 4096],
         ['complex64', 'complex128'],
         ['C', 'F'],
     ]
@@ -114,7 +114,7 @@ class FFTBatchedLayout(Benchmark):
 class RealFFTBatched(Benchmark):
     params = [
         [1, 4, 16, 64],
-        [256, 257, 1013, 1024, 2047, 2048, 4095, 4096],
+        [256, 257, 1023, 1024, 2047, 2048, 4095, 4096],
         ['rfft', 'irfft'],
     ]
     param_names = ['batch', 'size', 'operation']
