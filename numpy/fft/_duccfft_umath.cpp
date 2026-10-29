@@ -372,7 +372,8 @@ _duccfft_umath_exec(PyObject *m)
     // Diagnostic-only: report the actual C++ SIMD width and compile-time ISA
     // of the selected target, rather than trusting the dispatch target name.
     int lane_info[5] = {};
-    NPY_CPU_DISPATCH_CALL(duccfft_diagnostic_simd)(lane_info);
+    auto simd_probe = NPY_CPU_DISPATCH_CALL(duccfft_diagnostic_simd);
+    simd_probe(lane_info);
     if (PyModule_AddIntConstant(m, "__duccfft_float_lanes__", lane_info[0]) < 0 ||
         PyModule_AddIntConstant(m, "__duccfft_double_lanes__", lane_info[1]) < 0 ||
         PyModule_AddIntConstant(m, "__duccfft_has_avx512f__", lane_info[2]) < 0 ||
