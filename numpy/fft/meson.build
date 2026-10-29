@@ -3,25 +3,14 @@ if host_machine.system() == 'aix' or host_machine.system() == 'AIX'
   largefile_define += '-D_LARGE_FILES'
 endif
 
-# Match NumPy's no-plan-cache policy.  No worker pool, shared cache, or
-# cache mutex is needed; separate Python threads can still invoke FFTs.
+# Disable DUCC's worker pool and FFT plan cache.
 duccfft_args = [
   '-DDUCC0_NO_LOWLEVEL_THREADING',
   '-DDUCC0_NO_FFT_CACHE',
 ]
 
-duccfft_sources = [
-  'ducc0/infra/mav.cc',
-  'ducc0/infra/string_utils.cc',
-  'ducc0/infra/threading.cc',
-]
-
-# NumPy's per-target x86 -m flags *enable* features, but do not disable
-# features that the compiler enables by default.  For example, GCC 15 on
-# Ubuntu 26.04 defaults to x86-64-v3; adding -msse4.2 still emits AVX2 code
-# for an X86_V2 baseline.  Explicitly establish the requested baseline ISA
-# before multi_targets() adds the higher-target feature flags.  Apply the
-# same baseline to the non-dispatched extension and shared DUCC support code.
+# Reset the baseline ISA before adding per-target flags.
+# -msse4.2 alone does not disable compiler-default AVX2.
 duccfft_baseline_c_args = []
 duccfft_baseline_cpp_args = []
 if host_machine.cpu_family() == 'x86_64' and cpp.get_id() in ['gcc', 'clang']
@@ -41,10 +30,7 @@ endif
 duccfft_dispatch_cpp_args = largefile_define + duccfft_args + max_opt + duccfft_baseline_cpp_args
 duccfft_dispatch_cpp_args += cpp.get_supported_arguments('-fvisibility=hidden')
 
-# Compile the FFT implementation once for each NumPy CPU target.  The
-# generated dispatcher header is private to this static library; the Python
-# module below only contains stable wrappers and selects these entry points at
-# module initialization.
+# Build FFT kernels for each CPU target.
 mod_features = import('features')
 duccfft_dispatch = mod_features.multi_targets(
   '_duccfft.dispatch.h',
@@ -58,10 +44,14 @@ duccfft_dispatch = mod_features.multi_targets(
 )
 
 py.extension_module('_duccfft_umath',
-  # CPU feature helpers are hidden per extension; keep a private copy here,
-  # as the _simd extension does, rather than depending on _multiarray_umath.
-  ['_duccfft_umath.cpp', '../_core/src/common/npy_cpu_features.c']
-    + duccfft_sources,
+  # Keep CPU feature helpers local, as in _simd.
+  [
+    '_duccfft_umath.cpp',
+    '../_core/src/common/npy_cpu_features.c',
+    'ducc0/infra/mav.cc',
+    'ducc0/infra/string_utils.cc',
+    'ducc0/infra/threading.cc',
+  ],
   c_args: c_args_common + largefile_define + duccfft_baseline_c_args,
   cpp_args: largefile_define + duccfft_args + duccfft_baseline_cpp_args,
   include_directories: include_directories('ducc0'),
