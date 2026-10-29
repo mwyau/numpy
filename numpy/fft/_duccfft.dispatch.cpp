@@ -49,4 +49,3 @@ DUCCFFT_DEFINE_ENTRY(duccfft_irfft_float, irfft_loop<npy_float>)
 DUCCFFT_DEFINE_NATIVE_ND(duccfft_native_nd_double, npy_double)
 DUCCFFT_DEFINE_NATIVE_ND(duccfft_native_nd_float, npy_float)
 #undef DUCCFFT_DEFINE_NATIVE_ND
-
