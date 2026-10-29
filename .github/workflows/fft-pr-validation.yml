@@ -1,0 +1,50 @@
+name: Verify clean DUCC FFT PR branch
+
+on:
+  push:
+    branches:
+      - test/duccfft-pr-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fft-smoke:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify vendored sources against pinned merged DUCC commit
+        run: bash tools/vendoring/vendor_duccfft.sh --check
+
+      - name: Install build, lint, and test dependencies
+        run: python -m pip install --group dev-cli --group test-core ruff
+
+      - name: Validate diff and Python formatting
+        run: |
+          git diff --check origin/main...HEAD
+          python -m ruff check numpy/fft/_ducc.py numpy/fft/tests/test_duccfft.py numpy/fft/tests/test_native_nd.py
+
+      - name: Build clean NumPy with x86 multi-target dispatch
+        run: |
+          g++ --version | head -n 1
+          spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min -Dcpu-dispatch=max
+
+      - name: Verify CPU dispatch selections without global compiler flags
+        run: |
+          NPY_DISABLE_CPU_FEATURES=X86_V4,X86_V3 spin python -- -c "from numpy.fft import _duccfft_umath as m; assert m.__duccfft_cpu_dispatch_target__ == 'baseline(X86_V2)', m.__duccfft_cpu_dispatch_target__; print('V2 baseline selected')"
+          NPY_DISABLE_CPU_FEATURES=X86_V4 spin python -- -c "from numpy.fft import _duccfft_umath as m; assert m.__duccfft_cpu_dispatch_target__ == 'X86_V3', m.__duccfft_cpu_dispatch_target__; print('V3 selected')"
+          spin python -- -c "from numpy.fft import _duccfft_umath as m; print('Auto:', m.__duccfft_cpu_dispatch_target__); print('Compiled:', m.__duccfft_cpu_dispatch_targets__)"
+
+      - name: Run FFT backend, native ND and helper tests
+        run: spin test numpy/fft/tests/test_duccfft.py numpy/fft/tests/test_native_nd.py numpy/fft/tests/test_helper.py -- --timeout=600
