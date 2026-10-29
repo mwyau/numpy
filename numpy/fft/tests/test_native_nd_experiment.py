@@ -77,6 +77,35 @@ def test_resizing_and_out_fallback():
     assert np.fft.fftn(a, out=result) is result
 
 
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("axes", [None, (-2, -1), (0, -1), (-1, -2)])
+@pytest.mark.parametrize("inverse", [False, True])
+def test_default_and_negative_axes_use_native_path(dtype, axes, inverse):
+    rng = np.random.default_rng(28)
+    a = (rng.standard_normal((4, 7)) +
+         1j * rng.standard_normal((4, 7))).astype(dtype)
+    nd_transform = np.fft.ifftn if inverse else np.fft.fftn
+    one_transform = np.fft.ifft if inverse else np.fft.fft
+    selected_axes = tuple(range(a.ndim)) if axes is None else axes
+    native = backend._try_native_c2c_nd(
+        a, [a.shape[axis] for axis in selected_axes],
+        selected_axes, one_transform, None, None
+    )
+    assert native is not None
+    expected = _sequential(a, selected_axes, inverse, None)
+    atol = 2e-5 if dtype == np.complex64 else 1e-12
+    np.testing.assert_allclose(native, expected, rtol=atol, atol=atol)
+    np.testing.assert_allclose(
+        nd_transform(a, axes=axes), expected, rtol=atol, atol=atol
+    )
+
+
+def test_alias_axes_use_legacy_fallback():
+    a = np.ones((4, 8), dtype=np.complex128)
+    assert backend._try_native_c2c_nd(
+        a, (4, 4), (0, -2), np.fft.fft, None, None
+    ) is None
+
 def test_native_extension_rejects_invalid_arrays():
     a = np.ones((4, 8), np.complex128)
     out = np.empty_like(a)

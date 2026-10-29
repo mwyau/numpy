@@ -736,11 +736,18 @@ def _try_native_c2c_nd(a, s, axes, function, norm, out):
         function is not fft and function is not ifft
     ):
         return None
-    if (a.ndim < 2 or len(axes) < 2 or len(set(axes)) != len(axes) or
+    if (a.ndim < 2 or len(axes) < 2 or
         a.dtype not in (complex64, complex128) or
         not a.flags.c_contiguous or not a.flags.aligned or
-        norm not in (None, "backward", "forward", "ortho") or
-        any(n != a.shape[axis] or n < 1 for n, axis in zip(s, axes))):
+        norm not in (None, "backward", "forward", "ortho")):
+        return None
+
+    # _cook_nd_args retains NumPy's negative axis notation, e.g. (-2, -1)
+    # for the default fftn/fft2 axes. The C++ ND entry point expects
+    # nonnegative axes. Normalize before checking duplicates and dispatching.
+    native_axes = tuple(normalize_axis_index(axis, a.ndim) for axis in axes)
+    if (len(set(native_axes)) != len(native_axes) or
+        any(n != a.shape[axis] or n < 1 for n, axis in zip(s, native_axes))):
         return None
 
     forward = function is fft
@@ -754,7 +761,7 @@ def _try_native_c2c_nd(a, s, axes, function, norm, out):
     else:
         factor = 1.0
     result = empty_like(a, order="C")
-    duccfft.c2c_nd(a, result, tuple(axes), forward, factor)
+    duccfft.c2c_nd(a, result, native_axes, forward, factor)
     return result
 
 
