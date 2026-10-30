@@ -3,7 +3,7 @@ name: DUCC FFT V4 heuristic experiments
 on:
   push:
     branches:
-      - test/fft-v4-heuristics
+      - test/fft-v4-static-heuristics
   workflow_dispatch:
     inputs:
       samples:
