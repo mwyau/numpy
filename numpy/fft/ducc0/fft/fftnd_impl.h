@@ -691,7 +691,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                      || (((out.stride(axes[iax])*sizeof(T))&4095)==0);
       bool nostride = (in.stride(axes[iax])==1) && (out.stride(axes[iax])==1);
 
-      constexpr size_t l2cache=size_t(1)<<20;
+      constexpr size_t l2cache=size_t(1)<<21;
       constexpr size_t cacheline=64;
 
       // working set size
@@ -724,6 +724,8 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
           }
         else
           n_simul = vlen;
+        // Experiment: limit AVX-512 float batches on contiguous FFT axes.
+        if (nostride && vlen==16) n_simul = std::min(n_simul, size_t(8));
         if (critstride)  // make bunch large to reduce overall copy cost
           {
           n_bunch=n_simul;
