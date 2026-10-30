@@ -724,6 +724,10 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
           }
         else
           n_simul = vlen;
+        // Experiment: narrow V4 float batches only for 4 KiB row strides.
+        if (nostride && vlen==16 && in.ndim()==2 && axes[iax]==1 &&
+            ((in.stride(0)*sizeof(T))&4095)==0)
+          n_simul = std::min(n_simul, size_t(8));
         if (critstride)  // make bunch large to reduce overall copy cost
           {
           n_bunch=n_simul;
