@@ -17,11 +17,32 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   fft-experiments:
-    runs-on: ubuntu-26.04
+    name: AVX-512 candidate ${{ matrix.slot }} (${{ matrix.os }})
+    # GitHub-hosted Ubuntu labels do not guarantee AVX-512. Try several
+    # independent VMs in one workflow; each rejects unsuitable CPUs before
+    # checkout/dependency installation/build. Keep successful CPU generations
+    # separate rather than averaging across unrelated machines.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slot: 1
+            os: ubuntu-26.04
+          - slot: 2
+            os: ubuntu-24.04
+          - slot: 3
+            os: ubuntu-26.04
+          - slot: 4
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 180
+    # An unsupported VM fails its own preflight. Only the collection job
+    # determines whether at least one AVX-512 comparison actually completed.
+    continue-on-error: true
     env:
       CFLAGS: -march=x86-64-v2
       CXXFLAGS: -march=x86-64-v2
@@ -42,7 +63,7 @@ jobs:
           if missing:
               raise SystemExit(
                   f"x86-64-v4 unavailable (missing: {', '.join(missing)}). "
-                  "Re-run this job to try a different hosted CPU."
+                  "Skipping this candidate without checkout/build."
               )
           print("AVX-512 preflight passed.", flush=True)
           PY
@@ -68,7 +89,7 @@ jobs:
           echo "FFT_BENCH_CPU=$(python -c 'import os; print(min(os.sched_getaffinity(0)))')" >> "$GITHUB_ENV"
           command -v taskset
 
-      - name: Build, test and compare all pinned variants
+      - name: Build, test and compare all six pinned variants
         run: |
           python "$RUNNER_TEMP/fft_v4_experiments.py" suite \
             --cpu "$FFT_BENCH_CPU" \
@@ -77,10 +98,68 @@ jobs:
             --sample-ms "${{ inputs.sample_ms || 6 }}"
           cat "$RUNNER_TEMP/fft-v4-experiments/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload per-case results, samples and build logs
-        if: always()
+      - name: Upload completed comparison and logs
+        if: success()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fft-v4-heuristic-experiments
+          name: fft-v4-heuristic-experiments-${{ matrix.slot }}
+          path: ${{ runner.temp }}/fft-v4-experiments/
+          if-no-files-found: error
+
+      - name: Upload partial diagnostics on build/test failures
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-v4-heuristic-failed-${{ matrix.slot }}
           path: ${{ runner.temp }}/fft-v4-experiments/
           if-no-files-found: ignore
+
+  summarize:
+    name: Require a completed AVX-512 comparison
+    needs: fft-experiments
+    if: ${{ always() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Download successful comparison artifacts
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: fft-v4-heuristic-experiments-*
+          path: results
+
+      - name: Summarize successful CPUs, or fail if none qualified
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path("results")
+          reports = sorted(root.glob("*/REPORT.md"))
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a") as output:
+              output.write("# AVX-512 FFT multi-runner comparison\n\n")
+              if not reports:
+                  output.write(
+                      "**No complete A–E comparison was recorded.** "
+                      "Inspect the candidate jobs: no AVX-512 CPU may have been "
+                      "allocated, or a build/test failed.\n"
+                  )
+              for report in reports:
+                  header = report.read_text().splitlines()
+                  model = next(
+                      (x for x in header if x.startswith("**CPU model:")), "CPU unknown"
+                  )
+                  output.write(f"- Candidate {report.parent.name}: {model}\n")
+                  output.write(
+                      f"  Full per-CPU report and raw timings are in artifact "
+                      f"`{report.parent.name}`.\n"
+                  )
+          if not reports:
+              raise SystemExit(
+                  "No successful AVX-512 comparison across four independent "
+                  "GitHub-hosted VMs; review early CPU preflights and build logs."
+              )
+          print(f"Found {len(reports)} complete comparison(s).")
+          PY
