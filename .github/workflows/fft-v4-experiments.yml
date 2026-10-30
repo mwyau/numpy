@@ -5,6 +5,15 @@ on:
     branches:
       - test/fft-v4-heuristics
   workflow_dispatch:
+    inputs:
+      samples:
+        description: Timing samples per case
+        type: number
+        default: 7
+      sample_ms:
+        description: Approximate milliseconds per timing sample
+        type: number
+        default: 6
 
 permissions:
   contents: read
@@ -63,7 +72,9 @@ jobs:
         run: |
           python "$RUNNER_TEMP/fft_v4_experiments.py" suite \
             --cpu "$FFT_BENCH_CPU" \
-            --directory "$RUNNER_TEMP/fft-v4-experiments"
+            --directory "$RUNNER_TEMP/fft-v4-experiments" \
+            --samples "${{ inputs.samples || 7 }}" \
+            --sample-ms "${{ inputs.sample_ms || 6 }}"
           cat "$RUNNER_TEMP/fft-v4-experiments/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload per-case results, samples and build logs
