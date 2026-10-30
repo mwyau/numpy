@@ -790,7 +790,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if ((vlen>=8) ? (n_simul>=lvlen) : (n_simul==lvlen))
             {
             if (it.remaining()>=lvlen)
               {
@@ -818,7 +818,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if ((vlen>=8) ? (n_simul>=lvlen) : (n_simul==lvlen))
             {
             if (it.remaining()>=lvlen)
               {
