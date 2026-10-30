@@ -724,6 +724,13 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
           }
         else
           n_simul = vlen;
+        // Experiment: cap AVX-512 float lanes for 4 KiB-multiple row strides.
+        if (nostride && vlen==16 && in.ndim()==2 && axes[iax]==1 &&
+            (((in.stride(0)*sizeof(T))&4095)==0 ||
+             ((out.stride(0)*sizeof(T))&4095)==0) && n_simul>8)
+          n_simul=8;
+        if (vlen>=8)
+          while ((n_simul>1) && (n_simul>it.remaining())) n_simul/=2;
         if (critstride)  // make bunch large to reduce overall copy cost
           {
           n_bunch=n_simul;
