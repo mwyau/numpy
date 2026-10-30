@@ -47,6 +47,12 @@ def cases():
             for offset in (1, 8, 64):
                 for output in ("new", "fixed"):
                     add("fft", n, batch, "complex64", offset=offset, output=output)
+    # Also retain the 2D FFT workloads that regressed in the 354-case runs.
+    for rows, cols in ((64, 64), (256, 256), (313, 100)):
+        for dtype in ("complex64", "complex128"):
+            for kind in ("fftn", "ifftn"):
+                for output in ("new", "fixed"):
+                    add(kind, cols, rows, dtype, output=output)
     for n in (1023, 1024, 4095, 4096):
         for batch in (8, 16, 24, 64):
             for kind in ("rfft", "irfft"):
@@ -64,12 +70,14 @@ def workload(np, cfg):
             base = np.empty(math.prod(shape) + offset, dtype=dtype)
             return base[offset:].reshape(shape)
         return np.empty(shape, dtype=dtype)
-    if kind == "fft":
+    if kind in ("fft", "fftn", "ifftn"):
         raw = allocate((batch, n+pad), dtype)
         x = raw[:, :n]
         x[...] = rng.standard_normal(x.shape) + 1j*rng.standard_normal(x.shape)
         out = allocate((batch, n+pad), dtype)[:, :n] if output == "fixed" else None
-        return lambda: np.fft.fft(x, axis=-1, out=out)
+        if kind == "fft":
+            return lambda: np.fft.fft(x, axis=-1, out=out)
+        return lambda: getattr(np.fft, kind)(x, out=out)
     x = rng.standard_normal((batch, n)).astype(dtype)
     if kind == "rfft":
         out = np.empty((batch, n//2+1), dtype="complex128") if output=="fixed" else None
