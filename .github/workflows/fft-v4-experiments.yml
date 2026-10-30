@@ -21,24 +21,15 @@ permissions:
 
 jobs:
   fft-experiments:
-    name: AVX-512 candidate ${{ matrix.slot }} (${{ matrix.os }})
-    # GitHub-hosted Ubuntu labels do not guarantee AVX-512. Try several
-    # independent VMs in one workflow; each rejects unsuitable CPUs before
-    # checkout/dependency installation/build. Keep successful CPU generations
-    # separate rather than averaging across unrelated machines.
+    name: AVX-512 candidate ${{ matrix.slot }} (ubuntu-26.04)
+    # Hosted Ubuntu CPU allocation does not guarantee AVX-512. All candidates
+    # independently fail before checkout/build if X86_V4 is absent.
     strategy:
       fail-fast: false
+      max-parallel: 16
       matrix:
-        include:
-          - slot: 1
-            os: ubuntu-26.04
-          - slot: 2
-            os: ubuntu-24.04
-          - slot: 3
-            os: ubuntu-26.04
-          - slot: 4
-            os: ubuntu-24.04
-    runs-on: ${{ matrix.os }}
+        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     # An unsupported VM fails its own preflight. Only the collection job
     # determines whether at least one AVX-512 comparison actually completed.
@@ -115,12 +106,17 @@ jobs:
           if-no-files-found: ignore
 
   summarize:
-    name: Require a completed AVX-512 comparison
+    name: Aggregate every successful runner by CPU type
     needs: fft-experiments
     if: ${{ always() }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
+      - name: Checkout CPU-grouped report tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Download successful comparison artifacts
         id: download
         continue-on-error: true
@@ -128,38 +124,24 @@ jobs:
         with:
           pattern: fft-v4-heuristic-experiments-*
           path: results
+          merge-multiple: false
 
-      - name: Summarize successful CPUs, or fail if none qualified
+      - name: Aggregate all complete results by CPU type
         run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
+          python3 .github/scripts/fft_v4_group_results.py results \
+            --output results-summary --expected-runners 16
 
-          root = Path("results")
-          reports = sorted(root.glob("*/REPORT.md"))
-          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
-          with summary.open("a") as output:
-              output.write("# AVX-512 FFT multi-runner comparison\n\n")
-              if not reports:
-                  output.write(
-                      "**No complete A–E comparison was recorded.** "
-                      "Inspect the candidate jobs: no AVX-512 CPU may have been "
-                      "allocated, or a build/test failed.\n"
-                  )
-              for report in reports:
-                  header = report.read_text().splitlines()
-                  model = next(
-                      (x for x in header if x.startswith("**CPU model:")), "CPU unknown"
-                  )
-                  output.write(f"- Candidate {report.parent.name}: {model}\n")
-                  output.write(
-                      f"  Full per-CPU report and raw timings are in artifact "
-                      f"`{report.parent.name}`.\n"
-                  )
-          if not reports:
-              raise SystemExit(
-                  "No successful AVX-512 comparison across four independent "
-                  "GitHub-hosted VMs; review early CPU preflights and build logs."
-              )
-          print(f"Found {len(reports)} complete comparison(s).")
-          PY
+      - name: Publish grouped report even if no CPU completed
+        if: ${{ always() }}
+        run: |
+          if [ -f results-summary/CPU_GROUPED_REPORT.md ]; then
+            cat results-summary/CPU_GROUPED_REPORT.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload CPU-grouped summary and all per-case aggregates
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-v4-cpu-grouped-summary
+          path: results-summary/
+          if-no-files-found: warn
