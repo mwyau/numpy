@@ -724,6 +724,8 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
           }
         else
           n_simul = vlen;
+        // Experiment: limit AVX-512 float batches on contiguous FFT axes.
+        if (nostride && vlen==16) n_simul = std::min(n_simul, size_t(4));
         if (critstride)  // make bunch large to reduce overall copy cost
           {
           n_bunch=n_simul;
