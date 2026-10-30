@@ -80,6 +80,7 @@ py.install_sources(
     'tests/test_helper.py',
     'tests/test_duccfft.py',
     'tests/test_native_nd_experiment.py',
+    'tests/test_generic_radix_avx512.py',
   ],
   subdir: 'numpy/fft/tests',
   install_tag: 'tests'
