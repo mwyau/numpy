@@ -724,6 +724,8 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
           }
         else
           n_simul = vlen;
+        if (vlen>=8)
+          while ((n_simul>1) && (n_simul>it.remaining())) n_simul/=2;
         if (critstride)  // make bunch large to reduce overall copy cost
           {
           n_bunch=n_simul;
