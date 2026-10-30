@@ -117,6 +117,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify CPU-grouped summary logic
+        run: python3 -m unittest discover -s .github/scripts -p 'test_fft_v4_group_results.py' -v
+
       - name: Download successful comparison artifacts
         id: download
         continue-on-error: true
