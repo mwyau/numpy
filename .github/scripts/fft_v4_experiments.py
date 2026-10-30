@@ -265,7 +265,7 @@ def report(args):
         f"**Platform: {meta['os']}**",
         "",
         "All six profiles used the same host, CPU affinity, workloads, and timing "
-        "parameters. V2 is a common reference; A is unmodified upstream V4.",
+        "parameters. V2 is a common reference; A is the unchanged NumPy-fork V4 baseline.",
         "B/C change only dynamic batch-width scheduling. D/E add the ported "
         "AVX-512 scalar generic-radix accumulation.",
         "Ratios above 1 indicate faster execution.",
