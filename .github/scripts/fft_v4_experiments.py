@@ -18,20 +18,20 @@ import time
 
 COMMITS = [
     ("baseline", "987a91aeba193e856f2e64b78a99b76fc01bf743"),
-    ("cap8", "95e2bc87d84572c230ffd3660920f911072aaf30"),
-    ("cap4", "9dee71105769a7f2f22fab01a5f618e87fd7e6df"),
-    ("l2-2m", "c421c17c6f128f68f3bfff0917d7289aeb1bc2d2"),
     ("cap8-l2-2m", "7312821f8ff0492e0fff1ce18121e26df3b119ad"),
-    ("stride4k-cap8", "54c23085e48a96653f95d28c87bb4752bfa1a7c8"),
+    ("dyn-batch-width", "c0f6db3096009502a67d8717183e9eee70c07f92"),
+    ("dyn-vector-tail", "3540143e1e0d56a4d9433b95cee51355e0107032"),
+    ("dyn-cap8", "c3be95a95cd7183d7d6b697fdf434da3f8b2dd2b"),
+    ("dyn-cap8-2m-float", "6749b135bf03df0dbd34a429d48db13705d7be1c"),
+    ("dyn-stride-width", "a131d5fae9318c115f921bd1c058f05eb3d96fc4"),
     ("baseline-repeat", "987a91aeba193e856f2e64b78a99b76fc01bf743"),
 ]
-
 def cases():
     configurations = set()
     def add(kind, n, batch, dtype, layout="C", pad=0, offset=0, output="new"):
         configurations.add((kind, n, batch, dtype, layout, pad, offset, output))
     for n in (257, 1023, 1024, 2047, 2048, 4095, 4096):
-        for batch in (1, 4, 7, *range(8, 25), 32, 64):
+        for batch in (*range(1, 26), 31, 32, 33, 64):
             for dtype in ("complex64", "complex128"):
                 for output in ("new", "fixed"):
                     add("fft", n, batch, dtype, output=output)
@@ -192,6 +192,23 @@ def report(args):
     for ratio,variant,rec in top[:25]:
         lines.append(f"| {variant} | {rec['kind']} | {rec['n']} | {rec['batch']} "
                      f"| {rec['dtype']} | {rec['layout']} | {rec['output']} | {ratio:.3f}× |")
+    lines+=["", "## Remaining regressions against V2 (15 worst per variant)", "",
+            "V4/V2 ratios below 1 mean V4 is slower. Small-batch and complex128",
+            "cases are especially important for adaptive-width validation.", ""]
+    for variant,_ in COMMITS:
+        if variant in ("baseline","baseline-repeat"):
+            continue
+        worst = sorted(records,key=lambda r:r[f"{variant}_v4_over_v2"])[:15]
+        lines += [f"### {variant}", "",
+                  "| Kind | Length | Batch | Dtype | Layout | Pad | Output | V4/V2 |",
+                  "|---|---:|---:|---|---|---:|---|---:|"]
+        for rec in worst:
+            lines.append(
+                f"| {rec['kind']} | {rec['n']} | {rec['batch']} | {rec['dtype']}"
+                f" | {rec['layout']} | {rec['pad']} | {rec['output']}"
+                f" | {rec[f'{variant}_v4_over_v2']:.3f}× |"
+            )
+        lines.append("")
     lines+=["","The baseline-repeat results reveal drift between the first and last runs."]
     markdown="\n".join(lines)+"\n"
     (root/"REPORT.md").write_text(markdown)
