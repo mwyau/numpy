@@ -21,12 +21,12 @@ import time
 # Six immutable commits, one dispatch profile per branch.
 # V2 and A have identical FFT source; they differ only in selected ISA.
 COMMITS = [
-    ("V2", "exp/fft-avx512-v2-reference", "ac77862b514cc7843b9914a04ba7b6700e2663a5", "V2"),
-    ("A", "exp/fft-avx512-a-upstream", "6196f378a5960c45d90dc31bcafa0389a44478c9", "V4"),
-    ("B", "exp/fft-avx512-b-dyn16", "9ed2708d10c1e5930b695ccffcdbb2ed522a802e", "V4"),
-    ("C", "exp/fft-avx512-c-dyn8", "9078a64596834ea4b4725c47eeb8ba41aac294ba", "V4"),
-    ("D", "exp/fft-avx512-d-dyn16-radix", "a7bd4d1abd32b2e5e8906adcd1bb17797c0b6276", "V4"),
-    ("E", "exp/fft-avx512-e-dyn8-radix", "05705cadff0488a74659355d5b6a501a72be6cb7", "V4"),
+    ("V2", "exp/fft-avx512-v2-reference", "8ebede52fbdb2481cb290312d4f5fc377b4c0451", "V2"),
+    ("A", "exp/fft-avx512-a-upstream", "6beec97a7e3804c109a868df7a4030986dc23099", "V4"),
+    ("B", "exp/fft-avx512-b-dyn16", "f816908b2f97e8ce37e749d0f7857cd2355c885a", "V4"),
+    ("C", "exp/fft-avx512-c-dyn8", "feb3692e1ee006d47642da303c7e3dd86781d0c5", "V4"),
+    ("D", "exp/fft-avx512-d-dyn16-radix", "ce0d4aa3fc48a9fd880bc40092101313209b1151", "V4"),
+    ("E", "exp/fft-avx512-e-dyn8-radix", "d2f5a3dd49ca845ad34c85ff977488fc4e341499", "V4"),
 ]
 
 REQUIRED_AVX512 = frozenset(("avx512f", "avx512cd", "avx512bw", "avx512dq", "avx512vl"))
