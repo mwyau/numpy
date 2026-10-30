@@ -61,6 +61,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "ducc0/infra/useful_macros.h"
 
+// Shared by x86 SIMD backends and architecture-specific numerical kernels.
+#if defined(__SSE2__) && !defined(DUCC0_NO_SIMD)
+#include <immintrin.h>
+#endif
+
+
 // for some reason, MacOS doesn't seem to have stdx::simd_abi::deduce_t (yet?),
 // so we don't use the standard library SIMD support on MacOS.
 // In fact, we only trust libstdc++ at the moment to implement this fully.
@@ -170,10 +176,6 @@ template<typename Tsimd> inline void unaligned_add(typename Tsimd::value_type *p
 #ifndef DUCC0_NO_SIMD
 
 #define DUCC0_HOMEGROWN_SIMD
-
-#if defined(__SSE2__)  // we are on an x86 platform and we have vector types
-#include <immintrin.h>
-#endif
 
 #if defined(__aarch64__)  // let's check for SVE and Neon
 #if defined(__ARM_FEATURE_SVE) && defined(__ARM_FEATURE_SVE_BITS)
