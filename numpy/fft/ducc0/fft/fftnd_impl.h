@@ -765,7 +765,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if (n_simul>=lvlen)
             {
             if (it.remaining()>=lvlen)
               {
@@ -793,7 +793,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if (n_simul>=lvlen)
             {
             if (it.remaining()>=lvlen)
               {
@@ -821,7 +821,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if (n_simul>=lvlen)
             {
             if (it.remaining()>=lvlen)
               {
@@ -831,6 +831,23 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 it.advance(lvlen);
                 exec(it, tin, out, storage2, *plan, fct, nth1d);
                 }
+              }
+            }
+          }
+        // Exhaust the remaining transforms using every native, densely stored
+        // narrower SIMD width before falling back to the scalar tail. Do not
+        // synthesize float2: homegrown x86 SIMD has float4 as its minimum.
+        // This also retains simd_exists<T0,2> for the i686 ABI guard.
+        if constexpr ((vlen>4) && simd_exists<T0,2>)
+          {
+          constexpr size_t lvlen = 2;
+          if (n_simul>=lvlen && it.remaining()>=lvlen)
+            {
+            TmpStorage2<add_vec_t<T, lvlen>,T,T0> storage2(storage);
+            while (it.remaining()>=lvlen)
+              {
+              it.advance(lvlen);
+              exec(it, tin, out, storage2, *plan, fct, nth1d);
               }
             }
           }
