@@ -697,7 +697,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
       // working set size
       auto wss = [&](size_t vl) { return sizeof(T)*(2*len*vl + plan->bufsize()); };
       // is the FFT small enough to fit into L2 vectorized?
-      if (wss(1)>l2cache) // "long" FFT, don't execute more than one at the same time
+      if (false && wss(1)>l2cache) // experiment: bypass L2 threshold for large FFTs
         {
         n_simul=1;
         if (critstride)  // make bunch large to reduce overall copy cost
@@ -720,7 +720,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
         if (nostride)
           {
           n_simul = vlen;
-          while((n_simul>1) && (wss(n_simul)>l2cache)) n_simul /= 2;
+          while(false && (n_simul>1) && (wss(n_simul)>l2cache)) n_simul /= 2;
           }
         else
           n_simul = vlen;
