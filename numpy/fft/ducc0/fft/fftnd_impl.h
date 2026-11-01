@@ -724,6 +724,10 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
           }
         else
           n_simul = vlen;
+        if (nostride && vlen==16 && n_simul>8) n_simul=8;
+        if (!nostride && vlen==16 && n_simul>8) n_simul=8;
+        if (vlen>=8)
+          while ((n_simul>1) && (n_simul>it.remaining())) n_simul/=2;
         if (critstride)  // make bunch large to reduce overall copy cost
           {
           n_bunch=n_simul;
@@ -762,7 +766,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if (n_simul>=lvlen)
             {
             if (it.remaining()>=lvlen)
               {
@@ -790,7 +794,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if (n_simul>=lvlen)
             {
             if (it.remaining()>=lvlen)
               {
@@ -818,7 +822,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
                 }
               }
             }
-          if (n_simul==lvlen)
+          if (n_simul>=lvlen)
             {
             if (it.remaining()>=lvlen)
               {
@@ -831,6 +835,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
               }
             }
           }
+        // SIMD tails stop at native 4-wide; handle 1..3 with the scalar path.
 #endif
         {
         TmpStorage2<T,T,T0> storage2(storage);

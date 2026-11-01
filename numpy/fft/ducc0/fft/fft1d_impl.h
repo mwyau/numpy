@@ -88,6 +88,119 @@ namespace {
 template<typename T> constexpr inline size_t fft1d_simdlen
   = native_simd<T>::size();
 
+#ifndef DUCC0_FFT_AVX512_RADIX8
+#define DUCC0_FFT_AVX512_RADIX8 1
+#endif
+#ifndef DUCC0_FFT_AVX512_RADIX4
+#define DUCC0_FFT_AVX512_RADIX4 0
+#endif
+#include "ducc0/fft/avx512_radix_impl.h"
+
+// Architecture-specific accumulation is isolated here; selection uses
+// DUCC's native SIMD width and leaves narrower ISAs unchanged.
+template<typename T> inline constexpr bool avx512_accum_supported = false;
+
+/* Declared on all targets: the V2/V3 template bodies discard calls at
+   compile time, but C++ still requires the name to be declared. */
+template<typename T, bool fwd>
+void accumulate_radix_avx512(Cmplx<T> *cc, const Cmplx<T> *ch,
+    const Cmplx<T> *csarr, size_t ip, size_t idl1, size_t l);
+
+#if defined(__AVX512F__) && !defined(DUCC0_NO_SIMD)
+
+template<typename T> struct avx512_accum_ops;
+
+template<> struct avx512_accum_ops<float>
+  {
+  using V = __m512;
+  using Mask = __mmask16;
+  static constexpr size_t ncomplex=8;
+  static Mask mask(size_t n) { return Mask((1u << (2*n))-1u); }
+  static V load(const Cmplx<float> *p, Mask m)
+    { return _mm512_maskz_loadu_ps(m, static_cast<const void *>(p)); }
+  static void store(Cmplx<float> *p, Mask m, V v)
+    { _mm512_mask_storeu_ps(static_cast<void *>(p),m,v); }
+  static V set(float x) { return _mm512_set1_ps(x); }
+  static V add(V a, V b) { return _mm512_add_ps(a,b); }
+  static V mul(V a, V b) { return _mm512_mul_ps(a,b); }
+  static V fmadd(V a, V b, V c) { return _mm512_fmadd_ps(a,b,c); }
+  static V signed_swap(V x, float w)
+    {
+    const auto s=_mm512_permute_ps(x,0xB1);
+    return mul(s,_mm512_mask_blend_ps(0xAAAA,set(-w),set(w)));
+    }
+  };
+
+template<> struct avx512_accum_ops<double>
+  {
+  using V = __m512d;
+  using Mask = __mmask8;
+  static constexpr size_t ncomplex=4;
+  static Mask mask(size_t n) { return Mask((1u << (2*n))-1u); }
+  static V load(const Cmplx<double> *p, Mask m)
+    { return _mm512_maskz_loadu_pd(m,static_cast<const void *>(p)); }
+  static void store(Cmplx<double> *p, Mask m, V v)
+    { _mm512_mask_storeu_pd(static_cast<void *>(p),m,v); }
+  static V set(double x) { return _mm512_set1_pd(x); }
+  static V add(V a, V b) { return _mm512_add_pd(a,b); }
+  static V mul(V a, V b) { return _mm512_mul_pd(a,b); }
+  static V fmadd(V a, V b, V c) { return _mm512_fmadd_pd(a,b,c); }
+  static V signed_swap(V x, double w)
+    {
+    const auto s=_mm512_permute_pd(x,0x55);
+    return mul(s,_mm512_mask_blend_pd(0xAA,set(-w),set(w)));
+    }
+  };
+
+template<> inline constexpr bool avx512_accum_supported<float> = true;
+template<> inline constexpr bool avx512_accum_supported<double> = true;
+
+template<typename T, bool fwd>
+inline void accumulate_radix_avx512(Cmplx<T> *cc, const Cmplx<T> *ch,
+    const Cmplx<T> *csarr, size_t ip, size_t idl1, size_t l)
+  {
+  using O=avx512_accum_ops<T>;
+  const size_t ipph=(ip+1)/2, lc=ip-l;
+  const auto wal=fwd ? csarr[l].conj() : csarr[l];
+  const auto wal2=fwd ? csarr[2*l].conj() : csarr[2*l];
+  for (size_t ik0=0; ik0<idl1; ik0+=O::ncomplex)
+    {
+    const size_t n=std::min(O::ncomplex,idl1-ik0);
+    const auto m=O::mask(n);
+    auto load=[&](size_t j) { return O::load(ch+idl1*j+ik0,m); };
+    auto acc=O::fmadd(load(2),O::set(wal2.r),
+                     O::fmadd(load(1),O::set(wal.r),load(0)));
+    auto accc=O::add(O::signed_swap(load(ip-1),wal.i),
+                     O::signed_swap(load(ip-2),wal2.i));
+    size_t iwal=2*l, j=3, jc=ip-3;
+    for (;j<ipph-1;j+=2,jc-=2)
+      {
+      iwal+=l; if (iwal>ip) iwal-=ip;
+      const auto w1=fwd ? csarr[iwal].conj() : csarr[iwal];
+      iwal+=l; if (iwal>ip) iwal-=ip;
+      const auto w2=fwd ? csarr[iwal].conj() : csarr[iwal];
+      acc=O::add(acc,O::fmadd(load(j),O::set(w1.r),
+                              O::mul(load(j+1),O::set(w2.r))));
+      accc=O::add(accc,O::add(O::signed_swap(load(jc),w1.i),
+                               O::signed_swap(load(jc-1),w2.i)));
+      }
+    for (;j<ipph;++j,--jc)
+      {
+      iwal+=l; if (iwal>ip) iwal-=ip;
+      const auto w=fwd ? csarr[iwal].conj() : csarr[iwal];
+      acc=O::add(acc,O::mul(load(j),O::set(w.r)));
+      accc=O::add(accc,O::signed_swap(load(jc),w.i));
+      }
+    O::store(cc+idl1*l+ik0,m,acc);
+    O::store(cc+idl1*lc+ik0,m,accc);
+    }
+  }
+
+#endif // __AVX512F__ && !DUCC0_NO_SIMD
+
+
+
+
 template<bool fwd, typename T> void ROTX90(Cmplx<T> &a)
   { auto tmp_= fwd ? -a.r : a.r; a.r = fwd ? a.i : -a.i; a.i=tmp_; }
 
@@ -748,27 +861,43 @@ template <typename Tfs> class cfftp8: public cfftpass<Tfs>
           { return cc[a+ido*(b+ip*c)]; };
         for (size_t k=0; k<l1; ++k)
           {
-          {
-          Tcd a0, a1, a2, a3, a4, a5, a6, a7;
-          PM(a1,a5,CC(0,1,k),CC(0,5,k));
-          PM(a3,a7,CC(0,3,k),CC(0,7,k));
-          PMINPLACE(a1,a3);
-          ROTX90<fwd>(a3);
-
-          ROTX90<fwd>(a7);
-          PMINPLACE(a5,a7);
-          ROTX45<fwd>(a5);
-          ROTX135<fwd>(a7);
-
-          PM(a0,a4,CC(0,0,k),CC(0,4,k));
-          PM(a2,a6,CC(0,2,k),CC(0,6,k));
-          PM(CH(0,k,0),CH(0,k,4),a0+a2,a1);
-          PM(CH(0,k,2),CH(0,k,6),a0-a2,a3);
-          ROTX90<fwd>(a6);
-          PM(CH(0,k,1),CH(0,k,5),a4+a6,a5);
-          PM(CH(0,k,3),CH(0,k,7),a4-a6,a7);
-          }
-          for (size_t i=1; i<ido; ++i)
+          // Column zero has unity twiddles. Include it in SIMD only if
+          // a complete vector fits; otherwise retain DUCC's scalar path.
+          bool col0_simd=false;
+#if defined(__AVX512F__) && !defined(DUCC0_NO_SIMD) && DUCC0_FFT_AVX512_RADIX8
+          if constexpr (is_same<Tcd,Tcs>::value &&
+            (is_same<Tfs,float>::value || is_same<Tfs,double>::value))
+            col0_simd=(ido>=avx512_butterfly_ops<Tfs>::ncomplex);
+#endif
+          if (!col0_simd)
+            {
+            Tcd a0, a1, a2, a3, a4, a5, a6, a7;
+            PM(a1,a5,CC(0,1,k),CC(0,5,k));
+            PM(a3,a7,CC(0,3,k),CC(0,7,k));
+            PMINPLACE(a1,a3);
+            ROTX90<fwd>(a3);
+  
+            ROTX90<fwd>(a7);
+            PMINPLACE(a5,a7);
+            ROTX45<fwd>(a5);
+            ROTX135<fwd>(a7);
+  
+            PM(a0,a4,CC(0,0,k),CC(0,4,k));
+            PM(a2,a6,CC(0,2,k),CC(0,6,k));
+            PM(CH(0,k,0),CH(0,k,4),a0+a2,a1);
+            PM(CH(0,k,2),CH(0,k,6),a0-a2,a3);
+            ROTX90<fwd>(a6);
+            PM(CH(0,k,1),CH(0,k,5),a4+a6,a5);
+            PM(CH(0,k,3),CH(0,k,7),a4-a6,a7);
+            }
+          size_t first_i=col0_simd ? 0 : 1;
+#if defined(__AVX512F__) && !defined(DUCC0_NO_SIMD) && DUCC0_FFT_AVX512_RADIX8
+          if constexpr (is_same<Tcd,Tcs>::value &&
+            (is_same<Tfs,float>::value || is_same<Tfs,double>::value))
+            first_i=avx512_butterfly_columns<8,Tfs,fwd>(
+              cc,ch,wa.data(),ido,l1,k,first_i);
+#endif
+          for (size_t i=first_i; i<ido; ++i)
             {
             Tcd a0, a1, a2, a3, a4, a5, a6, a7;
             PM(a1,a5,CC(i,1,k),CC(i,5,k));
@@ -980,8 +1109,29 @@ template <typename Tfs> class cfftpg: public cfftpass<Tfs>
             tmp+=CH(i,k,j);
           CX(i,k,0) = tmp;
           }
-      for (size_t l=1, lc=ip-1; l<ipph; ++l, --lc)
+      // The native SIMD width selects the experimental scalar path.
+      // Other ISAs and SIMD-across-transforms use the original kernel.
+      constexpr bool has_512bit_simd = fft1d_simdlen<Tfs>*sizeof(Tfs)==64;
+      constexpr bool scalar_execution = is_same<Tcd,Tcs>::value;
+      bool use_avx512_accum = false;
+      if constexpr (has_512bit_simd && scalar_execution && avx512_accum_supported<Tfs>)
         {
+        if constexpr (is_same<Tfs,float>::value)
+          use_avx512_accum = (ip>=23) && ((idl1>=2 && idl1<=8) ||
+            (ip>=89 && l1==23 && ido==1));
+        else if constexpr (is_same<Tfs,double>::value)
+          use_avx512_accum = (ip>=23) && (idl1>=2 && idl1<=4);
+        }
+
+      if (use_avx512_accum)
+        {
+        if constexpr (has_512bit_simd && scalar_execution && avx512_accum_supported<Tfs>)
+          for (size_t l=1, lc=ip-1; l<ipph; ++l, --lc)
+            accumulate_radix_avx512<Tfs,fwd>(cc,ch,csarr.data(),ip,idl1,l);
+        }
+      else
+        for (size_t l=1, lc=ip-1; l<ipph; ++l, --lc)
+          {
         // j=0,1,2
         {
         auto wal  = fwd ? csarr[  l].conj() : csarr[  l];
