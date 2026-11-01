@@ -10,7 +10,11 @@ def _check_cpu_target():
         return
     from numpy.fft import _duccfft_umath
     selected = _duccfft_umath.__duccfft_cpu_dispatch_target__
-    if selected != expected:
+    # An x86-64-v2 build baseline is reported as baseline(X86_V2), not
+    # as a separate X86_V2 dispatch target. Both execute the V2 kernels.
+    valid = (selected == expected or
+             (expected == "X86_V2" and selected == "baseline(X86_V2)"))
+    if not valid:
         raise RuntimeError(
             f"ASV worker DUCC target mismatch: {selected!r} != {expected!r}"
         )
