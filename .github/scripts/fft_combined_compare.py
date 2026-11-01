@@ -23,6 +23,9 @@ PROFILES = {
 }
 REFERENCE = ("V4", "V3", "V2", "POCKETFFT")
 REQUIRED_CASES = 354
+REPEATS = 9
+V3_FLAGS = {"avx2", "fma", "f16c", "bmi1", "bmi2", "movbe"}
+V4_FLAGS = {"avx512f", "avx512cd", "avx512dq", "avx512bw", "avx512vl"}
 
 
 def geo(xs):
@@ -72,6 +75,9 @@ def cpu_info():
         "avx512": sorted(x for x in flags if x.startswith("avx512")),
         "affinity": sorted(os.sched_getaffinity(0)),
         "architecture": platform.machine(),
+        "isa": "X86_V4" if V4_FLAGS.issubset(flags) else (
+            "X86_V3" if V3_FLAGS.issubset(flags) else "X86_V2"),
+        "flags": sorted(flags),
     }
 
 
@@ -101,8 +107,9 @@ def report(title, cpu, rows, missing, run_count):
     lines = [
         "# " + title,
         "",
-        f"CPU: {cpu}. Complete five-way paired cases: {len(rows)}; runs: {run_count}.",
+        f"CPU: {cpu}. Matched optimized-case observations: {len(rows)}; runs: {run_count}.",
         "Speedup = reference latency / optimized latency; above 1.0 favors optimized.",
+        "A missing ISA profile is n/a, not a zero or a failed comparison.",
         "",
         "| Reference | Paired observations | Geomean | Median | Opt wins | >5% regressions | >10% | >20% |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -119,23 +126,28 @@ def report(title, cpu, rows, missing, run_count):
               "|---|---:|---:|---:|---:|---:|"]
     for cls in sorted(set(row["class"] for row in rows)):
         subset = [row for row in rows if row["class"] == cls]
-        vals = [geo(float(row[f"opt_vs_{name.lower()}"]) for row in subset)
-                for name in REFERENCE]
+        vals = [
+            geo([float(row[f"opt_vs_{name.lower()}"]) for row in subset
+                 if row.get(f"opt_vs_{name.lower()}")])
+            for name in REFERENCE
+        ]
         lines.append(f"| {cls} | {len(subset)} | " +
                      " | ".join(fmt(x) for x in vals) + " |")
-    worst = sorted(rows, key=lambda row: float(row["opt_vs_v4"]))[:15]
-    lines += ["", "## Largest regressions against vendored V4", "",
-              "| OPT / V4 | Benchmark | Parameters |", "|---:|---|---|"]
+    ref = "v4" if any(row.get("opt_vs_v4") for row in rows) else "v3"
+    worst = sorted((row for row in rows if row.get(f"opt_vs_{ref}")),
+                   key=lambda row: float(row[f"opt_vs_{ref}"]))[:15]
+    lines += ["", f"## Largest regressions against vendored {ref.upper()}", "",
+              f"| OPT / {ref.upper()} | Benchmark | Parameters |", "|---:|---|---|"]
     for row in worst:
-        lines.append(f"| {float(row['opt_vs_v4']):.3f}x | {row['benchmark']} | "
+        lines.append(f"| {float(row[f'opt_vs_{ref}']):.3f}x | {row['benchmark']} | "
                      f"{row['parameters'].replace('|', '/')} |")
     if missing:
-        lines += ["", "Missing/incomplete profiles: " + ", ".join(missing)]
-    lines += ["", "Method: NumPy ASV non-quick with 0.05 s warmup, five repeats, "
-              "one round, pinned CPU affinity and identical benchmark definitions. "
-              "Observed shared-host contention is not corrected.", ""]
+        lines += ["", "Missing/incomplete expected profiles: " + ", ".join(missing)]
+    lines += ["", f"Method: NumPy ASV non-quick with 0.05 s warmup, {REPEATS} recorded "
+              "repeats, one round, pinned CPU affinity, identical benchmarks, "
+              "and per-runner CPU dispatch checks. Shared-host contention is not corrected.",
+              ""]
     return "\n".join(lines)
-
 
 def fields():
     return (["slot", "cpu", "l2", "benchmark", "parameters", "class"]
@@ -155,9 +167,17 @@ def runner(src, out, slot):
     cpu = cpu_info()
     (out / "cpu.json").write_text(json.dumps(cpu, indent=2))
     (out / "slot.txt").write_text(str(slot))
+    expected = ["OPT", "V2", "POCKETFFT"]
+    if cpu["isa"] in ("X86_V3", "X86_V4"):
+        expected.append("V3")
+    if cpu["isa"] == "X86_V4":
+        expected.append("V4")
+    unsupported = sorted(set(PROFILES) - set(expected))
     results = {}
     missing = []
-    for label, suffix in PROFILES.items():
+    sample_validation = {}
+    for label in expected:
+        suffix = PROFILES[label]
         path = src / f"fft-dispatch-{suffix}" / "asv-results.json"
         status_file = src / f"fft-dispatch-{suffix}" / "results.json"
         if not path.exists() or not status_file.exists():
@@ -167,40 +187,54 @@ def runner(src, out, slot):
         if state.get("status") != "passed":
             missing.append(f"{label} ({state.get('status')}: {state.get('error', 'unknown')})")
             continue
+        raw = json.loads(path.read_text())
+        counts = [
+            len(case.get("samples") or []) for case in raw["cases"]
+            if case.get("status") == "completed"
+        ]
+        sample_validation[label] = sorted(set(counts))
+        if len(counts) != REQUIRED_CASES or any(n != REPEATS for n in counts):
+            missing.append(f"{label} (expected {REPEATS} repeats for {REQUIRED_CASES} cases)")
+            continue
         results[label] = read_cases(path)
         if len(results[label]) != REQUIRED_CASES:
             missing.append(f"{label} ({len(results[label])}/{REQUIRED_CASES} cases)")
+
     rows = []
-    if len(results) == len(PROFILES) and not missing:
-        allkeys = set(results["OPT"])
-        for k in sorted(allkeys):
-            if not all(k in results[p] for p in PROFILES):
-                continue
-            name, params = k
-            opt = results["OPT"][k]
+    if "OPT" in results:
+        for (name, params), opt in sorted(results["OPT"].items()):
             row = {
                 "slot": slot, "cpu": cpu["model"], "l2": ",".join(cpu["l2"]),
                 "benchmark": name, "parameters": params,
                 "class": name.split(".")[1] if "." in name else name,
             }
             for p in PROFILES:
-                row[f"{p.lower()}_us"] = f"{results[p][k]*1e6:.9f}"
+                value = results.get(p, {}).get((name, params))
+                row[f"{p.lower()}_us"] = (
+                    f"{value*1e6:.9f}" if value is not None else ""
+                )
             for p in REFERENCE:
-                row[f"opt_vs_{p.lower()}"] = f"{results[p][k]/opt:.9f}"
+                value = results.get(p, {}).get((name, params))
+                row[f"opt_vs_{p.lower()}"] = (
+                    f"{value/opt:.9f}" if value is not None else ""
+                )
             rows.append(row)
         if len(rows) != REQUIRED_CASES:
-            missing.append(f"incomplete five-way intersection ({len(rows)}/{REQUIRED_CASES})")
+            missing.append(f"incomplete OPT cases ({len(rows)}/{REQUIRED_CASES})")
     write_csv(out / "paired.csv", rows)
     (out / "status.json").write_text(json.dumps({
         "slot": slot, "cpu": cpu, "completed": len(rows),
-        "missing": missing, "profile_cases": {p: len(v) for p, v in results.items()},
+        "expected_profiles": expected, "unsupported_profiles": unsupported,
+        "missing": missing, "sample_counts": sample_validation,
+        "profile_cases": {p: len(v) for p, v in results.items()},
     }, indent=2))
-    message = report(f"NumPy combined AVX-512: runner {slot}", cpu["model"],
-                     rows, missing, 1)
+    message = report(
+        f"NumPy FFT candidate: runner {slot} ({cpu['isa']})", cpu["model"],
+        rows, missing, 1,
+    )
     (out / "REPORT.md").write_text(message)
     print(message, flush=True)
     return 0 if not missing else 1
-
 
 def grouped(folder, out, expected):
     out.mkdir(parents=True, exist_ok=True)
@@ -214,27 +248,33 @@ def grouped(folder, out, expected):
             raise ValueError(f"duplicate slot {slot}")
         seen_slots.add(slot)
         statuses.append((slot, state))
-        if state.get("missing"):
-            continue
         csvpath = path.with_name("paired.csv")
+        if not csvpath.exists():
+            continue
         with csvpath.open(newline="") as stream:
             rows = list(csv.DictReader(stream))
-        if len(rows) != REQUIRED_CASES:
+        if not rows:
             continue
         cpu = state["cpu"]
-        key = (cpu["model"], ",".join(cpu["l2"]))
+        key = (cpu["model"], ",".join(cpu["l2"]), cpu.get("isa", "unknown"))
         bycpu.setdefault(key, []).extend(rows)
-    docs = ["# NumPy combined AVX-512 versus vendored V4/V3/V2 and PocketFFT",
+
+    docs = ["# NumPy combined FFT: V4/V3/V2 and PocketFFT by CPU ISA",
             "", f"Runner slots received: {len(seen_slots)} / {expected}.",
-            f"Complete runner slots: {sum(not s.get('missing') and s.get('completed') == REQUIRED_CASES for _,s in statuses)}.",
-            "", "Every ratio is calculated within one runner before grouping by CPU model/L2.", ""]
+            f"Complete supported-profile runners: "
+            f"{sum(not s.get('missing') and s.get('completed') == REQUIRED_CASES for _,s in statuses)}.",
+            "", "All ratios are calculated within a single runner before grouping by CPU/L2/ISA.",
+            "V4 comparisons are unavailable on CPUs without AVX-512; those runners still contribute V3/V2/PocketFFT data.",
+            ""]
     with (out / "all-paired.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields())
         writer.writeheader()
         for key, rows in sorted(bycpu.items()):
             writer.writerows(rows)
-    for (model, l2), rows in sorted(bycpu.items()):
-        docs.append(report(f"{model} (L2 {l2})", model, rows, [], len(rows) // REQUIRED_CASES))
+    for (model, l2, isa), rows in sorted(bycpu.items()):
+        runs = len(set(row["slot"] for row in rows))
+        docs.append(report(f"{model} (L2 {l2}; ISA {isa})",
+                           model, rows, [], runs))
     failures = [(slot, state["missing"]) for slot, state in statuses if state.get("missing")]
     if failures or len(seen_slots) < expected:
         docs += ["", "## Missing or incomplete runners", ""]
@@ -245,8 +285,10 @@ def grouped(folder, out, expected):
     result = "\n".join(docs)
     (out / "CPU_GROUPED_REPORT.md").write_text(result)
     print(result, flush=True)
-    return 0 if len(seen_slots) == expected and not failures else 1
-
+    # Missing/failed runners remain visible above. Do not fail summarization
+    # solely because one hosted runner lacks an ISA or a profile did not finish.
+    # A completely empty comparison remains an error.
+    return 0 if bycpu else 1
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

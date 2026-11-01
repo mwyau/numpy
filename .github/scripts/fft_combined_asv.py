@@ -27,8 +27,8 @@ BENCH_FILTER = r"^bench_fft\."
 EXPECTED_FFT_CASES = 354
 TARGETS = ("X86_V2", "X86_V3", "X86_V4")
 PROFILES = TARGETS + ("OPT", "POCKETFFT")
-# Focused ASV: 5 samples in one round, preserving per-case warmup.
-TIMING_ATTRIBUTES = {"warmup_time": 0.05, "repeat": 5, "rounds": 1}
+# Focused ASV: nine recorded timing samples per case, one round, with warmup.
+TIMING_ATTRIBUTES = {"warmup_time": 0.05, "repeat": 9, "rounds": 1}
 PROFILE_MASKS = {
     "X86_V2": "X86_V4,X86_V3",
     "X86_V3": "X86_V4",
@@ -419,7 +419,10 @@ def run_profile(profile: str) -> int:
             data["numpy_file"] = str(Path(np.__file__).resolve())
             data["extension_file"] = str(Path(extension.__file__).resolve())
             data["host_feature_groups"] = host.get("cpu_feature_groups", {})
-            data["selected_target"] = assert_profile("X86_V4" if profile == "OPT" else profile, host, features, report)
+            target = (os.environ.get("FFT_BENCH_ISA") if profile == "OPT" else profile)
+            if profile == "OPT" and target not in TARGETS:
+                raise RuntimeError(f"Invalid or missing FFT_BENCH_ISA: {target!r}")
+            data["selected_target"] = assert_profile(target, host, features, report)
 
         verify_fft_correctness(np)
         print(f"{profile}: representative FFT correctness checks passed.")
@@ -470,6 +473,15 @@ def run_profile(profile: str) -> int:
         if captured:
             benchmarks, results = captured[-1]
             rows, totals = record_asv_results(benchmarks, results)
+            bad_samples = [
+                (row["benchmark"], row["parameters"], len(row["samples"] or []))
+                for row in rows
+                if row["status"] == "completed"
+                and len(row["samples"] or []) != TIMING_ATTRIBUTES["repeat"]
+            ]
+            data["sample_count_mismatches"] = len(bad_samples)
+            if bad_samples:
+                print(f"{profile}: ASV sample-count mismatches (first five): {bad_samples[:5]}")
             write_json(directory / "asv-results.json", {
                 "profile": profile,
                 "selected_target": data.get("selected_target"),
@@ -489,7 +501,9 @@ def run_profile(profile: str) -> int:
             data["failure_category"] = "benchmark-execution"
         elif not captured:
             return_code = 1
-        elif data["completed_cases"] != EXPECTED_FFT_CASES or data["failed_cases"] or data["skipped_cases"]:
+        elif (data["completed_cases"] != EXPECTED_FFT_CASES
+              or data["failed_cases"] or data["skipped_cases"]
+              or data.get("sample_count_mismatches")):
             data["error"] = (
                 f"ASV case totals did not show {EXPECTED_FFT_CASES} completed cases with no "
                 "failures or skips."
