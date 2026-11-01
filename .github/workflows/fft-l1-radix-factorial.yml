@@ -1,0 +1,118 @@
+name: FFT L1 fit and AVX512 radix4 radix8 factorial
+
+on:
+  push:
+    branches: [test/fft-l1-radix-factorial-20261101]
+    paths:
+      - '.github/workflows/fft-l1-radix-factorial.yml'
+      - '.github/scripts/fft_l1_radix_bundle.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: AVX512 candidate slot ${{ matrix.slot }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+    steps:
+      - name: Immediately reject CPUs without usable AVX512 V4
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          cpuid=min(os.sched_getaffinity(0))
+          blocks=Path('/proc/cpuinfo').read_text().strip().split('\n\n')
+          fields=None
+          for b in blocks:
+            d={k.strip():v.strip() for line in b.splitlines() if ':' in line for k,v in [line.split(':',1)]}
+            if d.get('processor')==str(cpuid):fields=d;break
+          if fields is None:raise SystemExit('Cannot identify pinned CPU')
+          need={'avx512f','avx512cd','avx512dq','avx512bw','avx512vl'}
+          missing=need-set(fields.get('flags','').split())
+          print('Pinned CPU:',cpuid,fields.get('model name'),flush=True)
+          if missing:raise SystemExit('EARLY_FAIL_NON_AVX512: '+', '.join(sorted(missing)))
+          print('AVX-512 V4 verified; continuing',flush=True)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Extract pinned experiment scripts
+        run: |
+          base64 -d .github/scripts/fft_l1_radix_bundle.txt | tar -xz -C .
+      - name: Record environment and verify the pinned DUCC source
+        shell: bash
+        run: |
+          mkdir -p fft-l1-radix-out
+          git rev-parse HEAD | tee fft-l1-radix-out/git-sha.txt
+          lscpu | tee fft-l1-radix-out/lscpu.txt
+          g++ --version | head -1
+          test -f numpy/fft/ducc0/fft/fft1d_impl.h
+          test -f numpy/fft/ducc0/fft/avx512_radix_impl.h
+      - name: Compile independent variants and run nine-repeat paired benchmarks
+        shell: bash
+        run: |
+          python3 .github/scripts/fft_l1_radix_runner.py \
+            --source numpy/fft/ducc0 \
+            --bench .github/benchmarks/fft_l1_radix_nd.cpp \
+            --out fft-l1-radix-out \
+            --slot ${{ matrix.slot }} \
+            --cycles 3
+      - name: Upload raw measurements and per-runner validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fft-l1-radix-slot-${{ matrix.slot }}
+          path: |
+            fft-l1-radix-out/host.json
+            fft-l1-radix-out/status.json
+            fft-l1-radix-out/paired.csv
+            fft-l1-radix-out/all-raw.csv
+            fft-l1-radix-out/raw-*.csv
+            fft-l1-radix-out/raw-*.err
+            fft-l1-radix-out/compile-*.log
+            fft-l1-radix-out/compile-*.err
+            fft-l1-radix-out/lscpu.txt
+            fft-l1-radix-out/git-sha.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  summary:
+    if: always()
+    name: Group FFT L1 and radix results by CPU and L1 cache
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    needs: bench
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fft-l1-radix-slot-*
+          merge-multiple: false
+          path: fft-l1-radix-artifacts
+      - name: Extract independent CPU report generator
+        run: |
+          base64 -d .github/scripts/fft_l1_radix_bundle.txt | tar -xz -C .
+      - name: Generate CPU-grouped report and list missing early-fail slots
+        shell: bash
+        run: |
+          python3 .github/scripts/fft_l1_radix_summary.py \
+            --artifacts fft-l1-radix-artifacts \
+            --out fft-l1-radix-summary \
+            --slots 40
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fft-l1-radix-cpu-grouped-report
+          path: fft-l1-radix-summary/
+          if-no-files-found: warn
+          retention-days: 30
