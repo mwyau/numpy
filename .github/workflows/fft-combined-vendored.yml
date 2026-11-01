@@ -1,0 +1,200 @@
+name: NumPy combined AVX-512 vs vendored V2 V3 V4 and PocketFFT
+on:
+  push:
+    branches: [test/fft-combined-vs-vendored-20261101]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  benchmark:
+    name: AVX-512 runner ${{ matrix.slot }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    env:
+      CFLAGS: -march=x86-64-v2
+      CXXFLAGS: -march=x86-64-v2
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      ASV_MACHINE_NAME: fft-${{ github.run_id }}-${{ matrix.slot }}
+    steps:
+      - name: Fail immediately on non-AVX-512 CPU
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          cpuid=min(os.sched_getaffinity(0))
+          blocks=Path('/proc/cpuinfo').read_text().strip().split('\n\n')
+          cpu=None
+          for block in blocks:
+              fields=dict(line.split(':',1) for line in block.splitlines() if ':' in line)
+              fields={k.strip():v.strip() for k,v in fields.items()}
+              if fields.get('processor')==str(cpuid):
+                  cpu=fields
+                  break
+          if cpu is None: raise SystemExit('CPU absent from /proc/cpuinfo')
+          print('Pinned CPU:',cpuid,cpu.get('model name'),flush=True)
+          required={'avx512f','avx512cd','avx512dq','avx512bw','avx512vl'}
+          missing=required-set(cpu.get('flags','').split())
+          if missing: raise SystemExit(f'Missing AVX512: {sorted(missing)}')
+          print('x86-64-v4 accepted',flush=True)
+          PY
+      - name: Checkout candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Checkout pinned unmodified vendored reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mwyau/numpy
+          ref: 6beec97a7e3804c109a868df7a4030986dc23099
+          path: vendor-reference
+          submodules: recursive
+          persist-credentials: false
+      - name: Checkout pinned PocketFFT reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mwyau/numpy
+          ref: b833c1b9bf6712cc8a03bb301b77c48984a2373d
+          path: pocketfft-reference
+          submodules: recursive
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Dependencies and script syntax
+        run: |
+          timeout -k 20s 1200s python -m pip install --group dev-cli --group test-core --group bench
+          python -m py_compile .github/scripts/fft_combined_asv.py .github/scripts/fft_combined_compare.py
+      - name: Verify refs and copy identical benchmark suite
+        run: |
+          test "$(git -C vendor-reference rev-parse HEAD)" = 6beec97a7e3804c109a868df7a4030986dc23099
+          test "$(git -C pocketfft-reference rev-parse HEAD)" = b833c1b9bf6712cc8a03bb301b77c48984a2373d
+          cp benchmarks/benchmarks/bench_fft.py vendor-reference/benchmarks/benchmarks/bench_fft.py
+          cp benchmarks/benchmarks/bench_fft.py pocketfft-reference/benchmarks/benchmarks/bench_fft.py
+          cmp benchmarks/benchmarks/bench_fft.py vendor-reference/benchmarks/benchmarks/bench_fft.py
+          cmp benchmarks/benchmarks/bench_fft.py pocketfft-reference/benchmarks/benchmarks/bench_fft.py
+          echo "FFT_BENCH_CPU=$(python -c 'import os; print(min(os.sched_getaffinity(0)))')" >> "$GITHUB_ENV"
+          command -v taskset
+      - name: Build optimized candidate
+        run: timeout -k 20s 1500s spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min -Dcpu-dispatch=max
+      - name: Test optimized FFT
+        run: |
+          timeout -k 20s 1200s spin test numpy/fft/tests/test_duccfft.py \
+            numpy/fft/tests/test_native_nd_experiment.py \
+            numpy/fft/tests/test_generic_radix_avx512.py -- --timeout=600
+      - name: Build unmodified vendored NumPy
+        working-directory: vendor-reference
+        run: timeout -k 20s 1500s spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min -Dcpu-dispatch=max
+      - name: Build PocketFFT NumPy
+        working-directory: pocketfft-reference
+        run: timeout -k 20s 1500s spin build --clean -- -Dallow-noblas=true -Dcpu-baseline=min -Dcpu-dispatch=max
+      - name: Initialize ASV
+        run: |
+          for checkout in . vendor-reference pocketfft-reference; do
+            (cd "$checkout/benchmarks" && asv machine --yes --machine "$ASV_MACHINE_NAME")
+          done
+      - name: Assert optimized V4 dispatched correctly
+        run: |
+          unset NPY_DISABLE_CPU_FEATURES NPY_ENABLE_CPU_FEATURES
+          taskset -c "$FFT_BENCH_CPU" spin python .github/scripts/fft_combined_asv.py host
+      - name: Run five ASV profiles on same CPU with rotated order
+        run: |
+          profiles=(OPT X86_V4 X86_V3 X86_V2 POCKETFFT)
+          slot=${{ matrix.slot }}
+          shift_by=$(( (slot-1) % 5 ))
+          failed=0
+          for ((i=0;i<5;i++)); do
+            profile="${profiles[$(( (i+shift_by) % 5 ))]}"
+            echo "=== $profile on runner $slot ==="
+            unset NPY_DISABLE_CPU_FEATURES NPY_ENABLE_CPU_FEATURES FFT_POCKETFFT_COMMIT DUCCFFT_ASV_EXPECTED_TARGET
+            if [[ "$profile" == OPT ]]; then
+              cd "$GITHUB_WORKSPACE"
+              export FFT_BENCH_ROOT="$PWD"
+              export DUCCFFT_ASV_EXPECTED_TARGET=X86_V4
+            elif [[ "$profile" == POCKETFFT ]]; then
+              cd "$GITHUB_WORKSPACE/pocketfft-reference"
+              export FFT_BENCH_ROOT="$PWD"
+              export FFT_POCKETFFT_COMMIT=b833c1b9bf6712cc8a03bb301b77c48984a2373d
+            else
+              cd "$GITHUB_WORKSPACE/vendor-reference"
+              export FFT_BENCH_ROOT="$PWD"
+              export DUCCFFT_ASV_EXPECTED_TARGET="$profile"
+              if [[ "$profile" == X86_V3 ]]; then export NPY_DISABLE_CPU_FEATURES=X86_V4; fi
+              if [[ "$profile" == X86_V2 ]]; then export NPY_DISABLE_CPU_FEATURES=X86_V4,X86_V3; fi
+            fi
+            if timeout -k 20s 2400s taskset -c "$FFT_BENCH_CPU" \
+              spin python "$GITHUB_WORKSPACE/.github/scripts/fft_combined_asv.py" run "$profile"; then
+              echo "$profile completed"
+            else
+              echo "::error::$profile failed or exceeded 40-minute budget"
+              failed=1
+            fi
+          done
+          exit "$failed"
+      - name: Pair results, including partial failures
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-combined-results"
+          for p in opt x86_v4 x86_v3 x86_v2 pocketfft diagnostics; do
+            if [ -d "$RUNNER_TEMP/fft-dispatch-$p" ]; then
+              cp -a "$RUNNER_TEMP/fft-dispatch-$p" "$RUNNER_TEMP/fft-combined-results/"
+            fi
+          done
+          python .github/scripts/fft_combined_compare.py runner \
+            --source "$RUNNER_TEMP" --output "$RUNNER_TEMP/fft-combined-results" \
+            --slot "${{ matrix.slot }}"
+      - name: Publish runner report
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/fft-combined-results/REPORT.md" ]; then
+            cat "$RUNNER_TEMP/fft-combined-results/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload complete or partial data
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-combined-runner-${{ matrix.slot }}
+          path: ${{ runner.temp }}/fft-combined-results/
+          if-no-files-found: warn
+          retention-days: 30
+  summarize:
+    name: Group by CPU and L2
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Collect runner artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: fft-combined-runner-*
+          path: results
+          merge-multiple: false
+      - name: Analyze paired five-way comparisons
+        run: python .github/scripts/fft_combined_compare.py group --source results --output grouped --expected 16
+      - name: Publish grouped summary
+        if: always()
+        run: |
+          if [ -f grouped/CPU_GROUPED_REPORT.md ]; then
+            cat grouped/CPU_GROUPED_REPORT.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload grouped report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fft-combined-cpu-grouped-summary
+          path: grouped/
+          if-no-files-found: warn
+          retention-days: 30
