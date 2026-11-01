@@ -238,13 +238,17 @@ def baseline_is_v2(target: str) -> bool:
     return bool(match and match.group(1) == "X86_V2")
 
 
-def assert_profile(profile: str, host: dict, features, report: dict) -> str:
+def assert_profile(
+    profile: str, host: dict, features, report: dict, *, native: bool = False
+) -> str:
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         raise RuntimeError(
             f"Host architecture is {platform.machine()}, expected x86-64."
         )
 
-    expected_mask = PROFILE_MASKS[profile]
+    # The optimized profile uses the host-native ISA without masking. Only
+    # the pinned vendored V3/V2 references are deliberately feature-masked.
+    expected_mask = "" if native else PROFILE_MASKS[profile]
     actual_mask = os.environ.get("NPY_DISABLE_CPU_FEATURES", "")
     if actual_mask != expected_mask:
         raise RuntimeError(
@@ -422,7 +426,9 @@ def run_profile(profile: str) -> int:
             target = (os.environ.get("FFT_BENCH_ISA") if profile == "OPT" else profile)
             if profile == "OPT" and target not in TARGETS:
                 raise RuntimeError(f"Invalid or missing FFT_BENCH_ISA: {target!r}")
-            data["selected_target"] = assert_profile(target, host, features, report)
+            data["selected_target"] = assert_profile(
+                target, host, features, report, native=(profile == "OPT")
+            )
 
         verify_fft_correctness(np)
         print(f"{profile}: representative FFT correctness checks passed.")

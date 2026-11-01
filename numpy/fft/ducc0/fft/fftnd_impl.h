@@ -727,7 +727,13 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
         if (nostride && vlen==16 && n_simul>8) n_simul=8;
         if (!nostride && vlen==16 && n_simul>8) n_simul=8;
         if (vlen>=8)
+          {
           while ((n_simul>1) && (n_simul>it.remaining())) n_simul/=2;
+          // G4 policy: for float32, two scalar transforms beat a 2-wide
+          // SIMD tail on measured AVX2/AVX-512 hosts. Keep 2-wide for double.
+          if constexpr (std::is_same_v<T0,float>)
+            if (n_simul==2) n_simul=1;
+          }
         if (critstride)  // make bunch large to reduce overall copy cost
           {
           n_bunch=n_simul;
@@ -779,7 +785,8 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
               }
             }
           }
-        if constexpr ((vlen>2) && (simd_exists<T0,vlen/2>))
+        if constexpr ((vlen>2) && simd_exists<T0,vlen/2>
+                      && ((vlen/2)!=2 || !std::is_same_v<T0,float>))
           {
           constexpr size_t lvlen = vlen/2;
           if (n_simul>=lvlen)
@@ -807,7 +814,8 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
               }
             }
           }
-        if constexpr ((vlen>4) && (simd_exists<T0,vlen/4>))
+        if constexpr ((vlen>4) && simd_exists<T0,vlen/4>
+                      && ((vlen/4)!=2 || !std::is_same_v<T0,float>))
           {
           constexpr size_t lvlen = vlen/4;
           if (n_simul>=lvlen)
@@ -835,7 +843,7 @@ DUCC0_NOINLINE void general_nd(const cfmav<T> &in, const vfmav<T> &out,
               }
             }
           }
-        // SIMD tails stop at native 4-wide; handle 1..3 with the scalar path.
+        // Float32 SIMD tails stop at 4-wide, then scalar; double may use 2-wide.
 #endif
         {
         TmpStorage2<T,T,T0> storage2(storage);

@@ -1,4 +1,4 @@
-name: NumPy combined FFT nine repeats by CPU ISA vs vendored and PocketFFT
+name: NumPy FFT G4 float32-only nine-repeat CPU benchmark
 on:
   push:
     branches: [test/fft-combined-vs-vendored-20261101]
@@ -111,7 +111,7 @@ jobs:
         run: |
           unset NPY_DISABLE_CPU_FEATURES NPY_ENABLE_CPU_FEATURES
           taskset -c "$FFT_BENCH_CPU" spin python .github/scripts/fft_combined_asv.py host
-      - name: Run nine-repeat ASV profiles supported by pinned CPU
+      - name: Run G4 float32-only nine-repeat ASV profiles on pinned CPU
         run: |
           profiles=(OPT X86_V2 POCKETFFT)
           if [[ "$FFT_BENCH_ISA" == X86_V3 || "$FFT_BENCH_ISA" == X86_V4 ]]; then
